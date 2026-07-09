@@ -31,24 +31,24 @@ public sealed class ProcessGraphifyService(
         if (!request.ForceFallback)
         {
             processSucceeded = await TryRunGraphifyAsync(inputRoot, graphRoot, artifacts, cancellationToken);
+            await NormalizeGraphifyArtifactsAsync(inputRoot, graphRoot, artifacts, cancellationToken);
         }
 
-        var graph = await BuildFallbackGraphAsync(workspace.RootPath, inputRoot, cancellationToken);
-        if (!processSucceeded)
-        {
-            artifacts.Add(await WriteArtifactAsync(graphRoot, "graph.json", graph, cancellationToken));
-            artifacts.Add(await WriteHtmlAsync(graphRoot, graph, cancellationToken));
-        }
+        var normalizedGraphifyOutputRoot = Path.Combine(graphRoot, "graphify-out");
+        var hasGraphifyOutput = Directory.Exists(normalizedGraphifyOutputRoot)
+            && Directory.EnumerateFiles(normalizedGraphifyOutputRoot, "graph.html", SearchOption.AllDirectories).Any();
 
         var manifest = new
         {
             request.WorkspaceId,
             inputRoot,
             outputRoot = graphRoot,
-            generator = processSucceeded ? "graphify-process" : "fallback-file-graph",
+            generator = hasGraphifyOutput ? "graphify-process" : "graphify-unavailable",
             generatedAt = DateTimeOffset.UtcNow,
-            nodeCount = graph.Nodes.Count,
-            edgeCount = graph.Edges.Count,
+            nodeCount = (int?)null,
+            edgeCount = (int?)null,
+            processSucceeded,
+            hasGraphifyOutput,
             artifacts
         };
         artifacts.Add(await WriteArtifactAsync(graphRoot, "manifest.json", manifest, cancellationToken));
@@ -59,8 +59,8 @@ public sealed class ProcessGraphifyService(
             graphRoot,
             manifest.generator,
             manifest.generatedAt,
-            graph.Nodes.Count,
-            graph.Edges.Count,
+            0,
+            0,
             artifacts);
     }
 
@@ -89,7 +89,7 @@ public sealed class ProcessGraphifyService(
             {
                 FileName = command,
                 Arguments = arguments,
-                WorkingDirectory = inputRoot,
+                WorkingDirectory = graphRoot,
                 RedirectStandardError = true,
                 RedirectStandardOutput = true,
                 UseShellExecute = false,
@@ -311,6 +311,61 @@ public sealed class ProcessGraphifyService(
         var relative = Path.GetRelativePath(inputRoot, path);
         var segments = relative.Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
         return segments.Any(segment => segment is ".git" or "bin" or "obj" or "node_modules");
+    }
+
+    private static Task NormalizeGraphifyArtifactsAsync(
+        string inputRoot,
+        string graphRoot,
+        ICollection<string> artifacts,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+
+        var preferredOutput = Path.Combine(graphRoot, "graphify-out");
+        var misplacedOutput = Path.Combine(inputRoot, "graphify-out");
+
+        if (Directory.Exists(misplacedOutput))
+        {
+            MoveDirectoryContents(misplacedOutput, preferredOutput);
+            if (!artifacts.Contains(preferredOutput))
+            {
+                artifacts.Add(preferredOutput);
+            }
+        }
+
+        if (Directory.Exists(preferredOutput) && !artifacts.Contains(preferredOutput))
+        {
+            artifacts.Add(preferredOutput);
+        }
+
+        return Task.CompletedTask;
+    }
+
+    private static void MoveDirectoryContents(string sourceDirectory, string targetDirectory)
+    {
+        Directory.CreateDirectory(targetDirectory);
+
+        foreach (var directory in Directory.EnumerateDirectories(sourceDirectory))
+        {
+            var destination = Path.Combine(targetDirectory, Path.GetFileName(directory));
+            MoveDirectoryContents(directory, destination);
+        }
+
+        foreach (var file in Directory.EnumerateFiles(sourceDirectory))
+        {
+            var destination = Path.Combine(targetDirectory, Path.GetFileName(file));
+            if (File.Exists(destination))
+            {
+                File.Delete(destination);
+            }
+
+            File.Move(file, destination);
+        }
+
+        if (!Directory.EnumerateFileSystemEntries(sourceDirectory).Any())
+        {
+            Directory.Delete(sourceDirectory, recursive: false);
+        }
     }
 
     private static string NormalizeId(string path)

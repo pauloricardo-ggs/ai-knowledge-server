@@ -595,7 +595,7 @@ const openFilePreview = async relativePath => {
   elements.filePreview.textContent = `${state.preview.content ?? ""}${suffix}`;
 };
 
-const graphifyUrl = workspaceId => `/workspaces/${encodeURIComponent(workspaceId)}/graphify/index.html`;
+const graphifyUrl = workspaceId => `/workspaces/${encodeURIComponent(workspaceId)}/graphify`;
 
 const refreshGraphify = async () => {
   const workspaceId = elements.workspaceId.value.trim() || "default";
@@ -604,9 +604,7 @@ const refreshGraphify = async () => {
 
   const sources = state.graphify.sources ?? [];
   const preferred = state.graphify.preferredAssetPath;
-  if (!state.graphifySelectedPath || !sources.some(source => source.relativePath === state.graphifySelectedPath)) {
-    state.graphifySelectedPath = preferred ?? sources[0]?.relativePath ?? null;
-  }
+  state.graphifySelectedPath = preferred ?? sources[0]?.relativePath ?? null;
 
   elements.openGraphifyExternal.href = state.graphifySelectedPath
     ? graphifyAssetUrl(state.graphifySelectedPath)
@@ -659,10 +657,8 @@ const renderGraphify = () => {
 
   if (graphify.hasVisualization && state.graphifySelectedPath) {
     const selectedSource = sources.find(source => source.relativePath === state.graphifySelectedPath);
-    const isFallback = graphify.manifest?.generator === "fallback-file-graph"
-      && state.graphifySelectedPath.startsWith("graphs/");
 
-    elements.graphifyStatusBadge.textContent = isFallback ? "Fallback" : "Disponível";
+    elements.graphifyStatusBadge.textContent = "Disponível";
     elements.graphifyStatusText.textContent = selectedSource
       ? `${graphify.statusMessage} Fonte atual: ${selectedSource.relativePath}.`
       : graphify.statusMessage;
@@ -675,7 +671,7 @@ const renderGraphify = () => {
     return;
   }
 
-  elements.graphifyStatusBadge.textContent = "Pendente";
+  elements.graphifyStatusBadge.textContent = "Aguardando";
   elements.graphifyStatusText.textContent = graphify.statusMessage;
   elements.graphifyEmptyState.classList.remove("hidden");
   elements.graphifyFrame.classList.add("hidden");

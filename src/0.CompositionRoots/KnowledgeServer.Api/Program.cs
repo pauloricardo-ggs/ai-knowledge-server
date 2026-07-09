@@ -274,7 +274,7 @@ app.MapGet("/workspaces/{workspaceId}/graphify", async (
     return Results.NotFound(new
     {
         message = "Nenhum HTML do Graphify foi encontrado para este workspace.",
-        expectedPath = $"workspaces/{workspaceId}/graphs/graph.html"
+        expectedPath = $"workspaces/{workspaceId}/graphs/graphify-out/graph.html"
     });
 });
 
@@ -296,7 +296,7 @@ app.MapGet("/workspaces/{workspaceId}/graphify/{**assetPath}", (
     var root = configuration[$"{WorkspaceOptions.SectionName}:RootPath"]
         ?? "/app/workspaces";
     var graphRoot = Path.Combine(root, workspaceId, "graphs");
-    var resolvedPath = TryResolveWorkspacePath(graphRoot, string.IsNullOrWhiteSpace(assetPath) ? "index.html" : assetPath);
+    var resolvedPath = TryResolveWorkspacePath(graphRoot, string.IsNullOrWhiteSpace(assetPath) ? "graphify-out/graph.html" : assetPath);
 
     if (resolvedPath is null)
     {
@@ -308,7 +308,7 @@ app.MapGet("/workspaces/{workspaceId}/graphify/{**assetPath}", (
         : Results.NotFound(new
         {
             message = "Graphify HTML ainda não foi gerado para este workspace.",
-            expectedPath = $"workspaces/{workspaceId}/graphs/index.html"
+            expectedPath = $"workspaces/{workspaceId}/graphs/graphify-out/graph.html"
         });
 
     return result;
@@ -541,9 +541,10 @@ static async Task<GraphifyDiagnosticsView> BuildGraphifyDiagnosticsAsync(
 {
     var graphRoot = WorkspaceLayout.GraphsRoot(workspace.RootPath);
     var repositoryRoot = WorkspaceLayout.RepositoriesRoot(workspace.RootPath);
+    var graphifyOutputRoot = Path.Combine(graphRoot, "graphify-out");
 
     var candidates = new List<GraphifySourceView>();
-    candidates.AddRange(DiscoverGraphifySources(workspace.RootPath, graphRoot, "workspace-graphs", "Saída do pipeline do servidor"));
+    candidates.AddRange(DiscoverGraphifySources(workspace.RootPath, graphifyOutputRoot, "workspace-graphify-out", "Graphify-out normalizado em graphs"));
 
     if (Directory.Exists(repositoryRoot))
     {
@@ -577,7 +578,8 @@ static async Task<GraphifyDiagnosticsView> BuildGraphifyDiagnosticsAsync(
     }
 
     var preferred = distinctCandidates
-        .OrderByDescending(candidate => candidate.Kind == "repository-graphify-out")
+        .OrderByDescending(candidate => candidate.Kind == "workspace-graphify-out")
+        .ThenByDescending(candidate => candidate.Kind == "repository-graphify-out")
         .ThenBy(candidate => candidate.RelativePath.EndsWith("graph.html", StringComparison.OrdinalIgnoreCase) ? 0 : 1)
         .ThenBy(candidate => candidate.RelativePath, StringComparer.OrdinalIgnoreCase)
         .FirstOrDefault();
@@ -590,9 +592,9 @@ static async Task<GraphifyDiagnosticsView> BuildGraphifyDiagnosticsAsync(
         manifest,
         processLog,
         preferred is null
-            ? "Nenhum HTML do Graphify foi encontrado."
-            : manifest?.Generator == "fallback-file-graph"
-                ? "Foi encontrado apenas o HTML de fallback do servidor."
+            ? "O grafo ainda não foi gerado pelo Graphify."
+            : preferred.Kind == "workspace-graphify-out"
+                ? "Foi encontrada a UI original gerada pelo Graphify em graphs/graphify-out/graph.html."
                 : preferred.Kind == "repository-graphify-out"
                     ? "Foi encontrada a UI original gerada pelo Graphify em inputs/repositories/.../graphify-out/graph.html."
                     : "Foi encontrada uma saída HTML do Graphify no workspace.");

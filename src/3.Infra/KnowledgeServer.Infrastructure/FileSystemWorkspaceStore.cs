@@ -471,8 +471,12 @@ public sealed class FileSystemWorkspaceStore(IOptions<WorkspaceOptions> options)
     {
         MigrateLegacyInputDirectory(workspacePath, WorkspaceLayout.RepositoriesRootName, WorkspaceLayout.RepositoriesRoot(workspacePath));
         MigrateLegacyInputDirectory(workspacePath, WorkspaceLayout.DocumentsRootName, WorkspaceLayout.DocumentsRoot(workspacePath));
+        MigrateLegacyMetadataFile(
+            Path.Combine(WorkspaceLayout.RepositoriesRoot(workspacePath), "repositories.json"),
+            RepositoriesMetadataPath(workspacePath));
 
         Directory.CreateDirectory(WorkspaceLayout.RepositoriesRoot(workspacePath));
+        Directory.CreateDirectory(WorkspaceLayout.InputsRoot(workspacePath));
         Directory.CreateDirectory(WorkspaceLayout.RawDocumentsRoot(workspacePath));
         Directory.CreateDirectory(WorkspaceLayout.GraphsRoot(workspacePath));
         Directory.CreateDirectory(WorkspaceLayout.RoslynRoot(workspacePath));
@@ -484,7 +488,7 @@ public sealed class FileSystemWorkspaceStore(IOptions<WorkspaceOptions> options)
 
     private static string RepositoriesMetadataPath(string workspaceRoot)
     {
-        return Path.Combine(WorkspaceLayout.RepositoriesRoot(workspaceRoot), "repositories.json");
+        return Path.Combine(WorkspaceLayout.InputsRoot(workspaceRoot), "repositories.json");
     }
 
     private static async Task WriteRepositoriesAsync(
@@ -572,6 +576,17 @@ public sealed class FileSystemWorkspaceStore(IOptions<WorkspaceOptions> options)
         {
             Directory.Delete(legacyPath, recursive: false);
         }
+    }
+
+    private static void MigrateLegacyMetadataFile(string legacyPath, string targetPath)
+    {
+        if (!File.Exists(legacyPath) || File.Exists(targetPath))
+        {
+            return;
+        }
+
+        Directory.CreateDirectory(Path.GetDirectoryName(targetPath)!);
+        File.Move(legacyPath, targetPath);
     }
 
     private static string[] Tokenize(string value)
