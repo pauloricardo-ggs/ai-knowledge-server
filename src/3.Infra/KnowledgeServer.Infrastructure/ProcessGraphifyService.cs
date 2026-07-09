@@ -28,9 +28,12 @@ public sealed class ProcessGraphifyService(
 
         var artifacts = new List<string>();
         var processSucceeded = false;
+        GraphifyExecution? execution = null;
         if (!request.ForceFallback)
         {
-            processSucceeded = await TryRunGraphifyAsync(inputRoot, graphRoot, artifacts, cancellationToken);
+            execution = await ExecuteGraphifyWithRetryAsync(inputRoot, graphRoot, cancellationToken);
+            processSucceeded = execution.ExitCode == 0;
+            artifacts.Add(await WriteProcessLogAsync(graphRoot, execution, cancellationToken));
             await NormalizeGraphifyArtifactsAsync(inputRoot, graphRoot, artifacts, cancellationToken);
         }
 
@@ -64,16 +67,26 @@ public sealed class ProcessGraphifyService(
             artifacts);
     }
 
-    private async Task<bool> TryRunGraphifyAsync(
+    private async Task<GraphifyExecution> ExecuteGraphifyWithRetryAsync(
         string inputRoot,
         string graphRoot,
-        ICollection<string> artifacts,
         CancellationToken cancellationToken)
     {
         var command = options.Value.GraphifyCommand;
         if (string.IsNullOrWhiteSpace(command))
         {
-            return false;
+            return new GraphifyExecution(
+                command,
+                string.Empty,
+                inputRoot,
+                graphRoot,
+                DateTimeOffset.UtcNow,
+                null,
+                null,
+                null,
+                null,
+                "GraphifyCommand não configurado.",
+                []);
         }
 
         var arguments = options.Value.GraphifyArguments
@@ -81,7 +94,38 @@ public sealed class ProcessGraphifyService(
             .Replace("{RepositoryRoot}", WorkspaceLayout.RepositoriesRoot(Path.GetDirectoryName(inputRoot) ?? inputRoot), StringComparison.Ordinal)
             .Replace("{GraphRoot}", graphRoot, StringComparison.Ordinal);
 
-        var processLogPath = Path.Combine(graphRoot, "graphify-process.json");
+        var firstAttempt = await RunGraphifyAsync(command, arguments, inputRoot, graphRoot, cancellationToken);
+        if (!ShouldRetryCodeOnly(firstAttempt))
+        {
+            return firstAttempt with { Attempts = [firstAttempt.ToAttempt()] };
+        }
+
+        var retryArguments = $"{arguments} --code-only";
+        var retryAttempt = await RunGraphifyAsync(command, retryArguments, inputRoot, graphRoot, cancellationToken);
+        return retryAttempt with
+        {
+            Attempts = [
+                firstAttempt.ToAttempt(),
+                retryAttempt.ToAttempt("Retry automático com --code-only após falha por falta de chave de LLM.")
+            ]
+        };
+    }
+
+    private static bool ShouldRetryCodeOnly(GraphifyExecution execution)
+    {
+        return execution.ExitCode is not 0
+            && !string.IsNullOrWhiteSpace(execution.Stderr)
+            && execution.Stderr.Contains("no LLM API key found", StringComparison.OrdinalIgnoreCase)
+            && !execution.Arguments.Contains("--code-only", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static async Task<GraphifyExecution> RunGraphifyAsync(
+        string command,
+        string arguments,
+        string inputRoot,
+        string graphRoot,
+        CancellationToken cancellationToken)
+    {
         try
         {
             using var process = new Process();
@@ -103,49 +147,75 @@ public sealed class ProcessGraphifyService(
             var stderrTask = process.StandardError.ReadToEndAsync(cancellationToken);
             await process.WaitForExitAsync(cancellationToken);
 
-            var log = new
-            {
+            return new GraphifyExecution(
                 command,
                 arguments,
                 inputRoot,
                 graphRoot,
                 startedAt,
-                finishedAt = DateTimeOffset.UtcNow,
+                DateTimeOffset.UtcNow,
                 process.ExitCode,
-                stdout = await stdoutTask,
-                stderr = await stderrTask
-            };
-
-            await File.WriteAllTextAsync(
-                processLogPath,
-                JsonSerializer.Serialize(log, JsonOptions),
-                Encoding.UTF8,
-                cancellationToken);
-            artifacts.Add(processLogPath);
-
-            return process.ExitCode == 0;
+                await stdoutTask,
+                await stderrTask,
+                null,
+                []);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException or System.ComponentModel.Win32Exception)
         {
-            var log = new
-            {
+            return new GraphifyExecution(
                 command,
                 arguments,
                 inputRoot,
                 graphRoot,
-                failedAt = DateTimeOffset.UtcNow,
-                error = ex.Message
-            };
-
-            await File.WriteAllTextAsync(
-                processLogPath,
-                JsonSerializer.Serialize(log, JsonOptions),
-                Encoding.UTF8,
-                cancellationToken);
-            artifacts.Add(processLogPath);
-
-            return false;
+                DateTimeOffset.UtcNow,
+                null,
+                null,
+                null,
+                null,
+                ex.Message,
+                []);
         }
+    }
+
+    private static async Task<string> WriteProcessLogAsync(
+        string graphRoot,
+        GraphifyExecution execution,
+        CancellationToken cancellationToken)
+    {
+        var processLogPath = Path.Combine(graphRoot, "graphify-process.json");
+        var log = new
+        {
+            execution.Command,
+            execution.Arguments,
+            execution.InputRoot,
+            execution.GraphRoot,
+            startedAt = execution.StartedAt,
+            finishedAt = execution.FinishedAt,
+            exitCode = execution.ExitCode,
+            stdout = execution.Stdout,
+            stderr = execution.Stderr,
+            error = execution.Error,
+            attempts = execution.Attempts.Select(attempt => new
+            {
+                attempt.Command,
+                attempt.Arguments,
+                startedAt = attempt.StartedAt,
+                finishedAt = attempt.FinishedAt,
+                exitCode = attempt.ExitCode,
+                stdout = attempt.Stdout,
+                stderr = attempt.Stderr,
+                error = attempt.Error,
+                attempt.Note
+            })
+        };
+
+        await File.WriteAllTextAsync(
+            processLogPath,
+            JsonSerializer.Serialize(log, JsonOptions),
+            Encoding.UTF8,
+            cancellationToken);
+
+        return processLogPath;
     }
 
     private static async Task<GraphDocument> BuildFallbackGraphAsync(
@@ -392,6 +462,34 @@ public sealed class ProcessGraphifyService(
             return null;
         }
     }
+
+    private sealed record GraphifyExecution(
+        string Command,
+        string Arguments,
+        string InputRoot,
+        string GraphRoot,
+        DateTimeOffset StartedAt,
+        DateTimeOffset? FinishedAt,
+        int? ExitCode,
+        string? Stdout,
+        string? Stderr,
+        string? Error,
+        IReadOnlyCollection<GraphifyAttempt> Attempts)
+    {
+        public GraphifyAttempt ToAttempt(string? note = null)
+            => new(Command, Arguments, StartedAt, FinishedAt, ExitCode, Stdout, Stderr, Error, note);
+    }
+
+    private sealed record GraphifyAttempt(
+        string Command,
+        string Arguments,
+        DateTimeOffset StartedAt,
+        DateTimeOffset? FinishedAt,
+        int? ExitCode,
+        string? Stdout,
+        string? Stderr,
+        string? Error,
+        string? Note);
 
     private sealed record GraphDocument(
         IReadOnlyCollection<GraphNode> Nodes,
