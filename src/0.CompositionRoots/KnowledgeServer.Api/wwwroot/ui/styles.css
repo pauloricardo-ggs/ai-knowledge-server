@@ -493,6 +493,19 @@ p {
   min-height: 540px;
 }
 
+.graphify-surface {
+  min-height: 720px;
+  align-content: start;
+}
+
+.graphify-frame {
+  width: 100%;
+  min-height: 920px;
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  background: #fff;
+}
+
 .explorer-entries {
   display: grid;
   gap: 10px;

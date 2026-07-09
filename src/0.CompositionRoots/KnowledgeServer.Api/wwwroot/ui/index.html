@@ -74,6 +74,7 @@
         <button class="view-tab" data-view="management" type="button">Gerenciamento</button>
         <button class="view-tab" data-view="jobs" type="button">Jobs</button>
         <button class="view-tab" data-view="explorer" type="button">Workspace explorer</button>
+        <button class="view-tab" data-view="graphify" type="button">Graphify</button>
         <button class="view-tab" data-view="tools" type="button">Ferramentas MCP</button>
       </nav>
 
@@ -276,6 +277,29 @@
             </div>
             <article id="filePreview" class="response" aria-live="polite">Nenhum arquivo selecionado.</article>
           </section>
+        </div>
+      </section>
+
+      <section id="view-graphify" class="view-panel panel hidden">
+        <div class="section-heading">
+          <div>
+            <h2>Graphify</h2>
+            <p>Visualize o HTML gerado do grafo do workspace, incluindo nós, comunidades e relações.</p>
+          </div>
+          <div class="hero-actions">
+            <button id="refreshGraphify" type="button" class="secondary-button">Atualizar gráfico</button>
+            <a id="openGraphifyExternal" class="secondary-button" href="#" target="_blank" rel="noreferrer">Abrir em nova guia</a>
+          </div>
+        </div>
+
+        <div class="card-surface graphify-surface">
+          <div class="section-heading compact">
+            <h3>Status do Graphify</h3>
+            <span id="graphifyStatusBadge" class="badge">Verificando...</span>
+          </div>
+          <p id="graphifyStatusText" class="muted-text">Carregando disponibilidade do HTML do grafo.</p>
+          <div id="graphifyEmptyState" class="empty-state hidden">O HTML do Graphify ainda não foi gerado para este workspace.</div>
+          <iframe id="graphifyFrame" class="graphify-frame hidden" title="Graphify workspace graph"></iframe>
         </div>
       </section>
 

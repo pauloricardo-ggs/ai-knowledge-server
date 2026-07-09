@@ -69,7 +69,13 @@ const elements = {
   explorerEntries: document.querySelector("#explorerEntries"),
   previewTitle: document.querySelector("#previewTitle"),
   previewMeta: document.querySelector("#previewMeta"),
-  filePreview: document.querySelector("#filePreview")
+  filePreview: document.querySelector("#filePreview"),
+  refreshGraphify: document.querySelector("#refreshGraphify"),
+  openGraphifyExternal: document.querySelector("#openGraphifyExternal"),
+  graphifyStatusBadge: document.querySelector("#graphifyStatusBadge"),
+  graphifyStatusText: document.querySelector("#graphifyStatusText"),
+  graphifyEmptyState: document.querySelector("#graphifyEmptyState"),
+  graphifyFrame: document.querySelector("#graphifyFrame")
 };
 
 const state = {
@@ -80,6 +86,7 @@ const state = {
   jobs: [],
   explorer: null,
   preview: null,
+  graphify: null,
   includeHiddenEntries: false,
   explorerPath: "",
   jobPage: 1
@@ -120,6 +127,10 @@ const switchView = viewName => {
 
   for (const panel of elements.viewPanels) {
     panel.classList.toggle("hidden", panel.id !== `view-${viewName}`);
+  }
+
+  if (viewName === "graphify") {
+    refreshGraphify().catch(error => setResponse(error.message));
   }
 };
 
@@ -178,6 +189,7 @@ const loadWorkspace = async () => {
   state.jobs = await jobsResponse.json();
 
   await refreshExplorer();
+  await refreshGraphify();
   renderDashboard();
   renderResources();
   renderJobs();
@@ -422,6 +434,65 @@ const openFilePreview = async relativePath => {
   elements.filePreview.textContent = `${state.preview.content ?? ""}${suffix}`;
 };
 
+const graphifyUrl = workspaceId => `/workspaces/${encodeURIComponent(workspaceId)}/graphify`;
+
+const refreshGraphify = async () => {
+  const workspaceId = elements.workspaceId.value.trim() || "default";
+  const url = graphifyUrl(workspaceId);
+  elements.openGraphifyExternal.href = url;
+
+  const response = await fetch(url, {
+    headers: {
+      Accept: "text/html,application/json"
+    }
+  });
+
+  if (response.ok) {
+    state.graphify = {
+      available: true,
+      message: "HTML do grafo disponível.",
+      url
+    };
+  } else {
+    const payload = await response.json().catch(() => null);
+    state.graphify = {
+      available: false,
+      message: payload?.message ?? "HTML do grafo ainda não está disponível.",
+      url
+    };
+  }
+
+  renderGraphify();
+};
+
+const renderGraphify = () => {
+  const graphify = state.graphify;
+  if (!graphify) {
+    elements.graphifyStatusBadge.textContent = "Indisponível";
+    elements.graphifyStatusText.textContent = "Status do Graphify ainda não carregado.";
+    elements.graphifyEmptyState.classList.remove("hidden");
+    elements.graphifyFrame.classList.add("hidden");
+    return;
+  }
+
+  if (graphify.available) {
+    elements.graphifyStatusBadge.textContent = "Disponível";
+    elements.graphifyStatusText.textContent = graphify.message;
+    elements.graphifyEmptyState.classList.add("hidden");
+    elements.graphifyFrame.classList.remove("hidden");
+    if (elements.graphifyFrame.src !== new URL(graphify.url, window.location.origin).toString()) {
+      elements.graphifyFrame.src = graphify.url;
+    }
+    return;
+  }
+
+  elements.graphifyStatusBadge.textContent = "Pendente";
+  elements.graphifyStatusText.textContent = graphify.message;
+  elements.graphifyEmptyState.classList.remove("hidden");
+  elements.graphifyFrame.classList.add("hidden");
+  elements.graphifyFrame.removeAttribute("src");
+};
+
 const currentArguments = () => {
   const maxResults = Number.parseInt(elements.maxResults.value, 10);
   const args = {
@@ -609,6 +680,10 @@ elements.explorerUp.addEventListener("click", () => {
 
 elements.refreshExplorer.addEventListener("click", () => {
   refreshExplorer().catch(error => setResponse(error.message));
+});
+
+elements.refreshGraphify.addEventListener("click", () => {
+  refreshGraphify().catch(error => setResponse(error.message));
 });
 
 switchView("overview");
