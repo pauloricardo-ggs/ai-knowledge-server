@@ -33,8 +33,18 @@ public sealed class ProcessGraphifyService(
         {
             execution = await ExecuteGraphifyWithRetryAsync(inputRoot, graphRoot, cancellationToken);
             processSucceeded = execution.ExitCode == 0;
-            artifacts.Add(await WriteProcessLogAsync(graphRoot, execution, cancellationToken));
             await NormalizeGraphifyArtifactsAsync(inputRoot, graphRoot, artifacts, cancellationToken);
+
+            var normalizedGraphJsonPath = Path.Combine(graphRoot, "graphify-out", "graph.json");
+            var normalizedGraphHtmlPath = Path.Combine(graphRoot, "graphify-out", "graph.html");
+            if (processSucceeded && File.Exists(normalizedGraphJsonPath) && !File.Exists(normalizedGraphHtmlPath))
+            {
+                execution = await ExecuteClusterOnlyAsync(inputRoot, graphRoot, normalizedGraphJsonPath, execution, cancellationToken);
+                processSucceeded = execution.ExitCode == 0;
+                await NormalizeGraphifyArtifactsAsync(inputRoot, graphRoot, artifacts, cancellationToken);
+            }
+
+            artifacts.Add(await WriteProcessLogAsync(graphRoot, execution, cancellationToken));
         }
 
         var normalizedGraphifyOutputRoot = Path.Combine(graphRoot, "graphify-out");
@@ -117,6 +127,32 @@ public sealed class ProcessGraphifyService(
             && !string.IsNullOrWhiteSpace(execution.Stderr)
             && execution.Stderr.Contains("no LLM API key found", StringComparison.OrdinalIgnoreCase)
             && !execution.Arguments.Contains("--code-only", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private async Task<GraphifyExecution> ExecuteClusterOnlyAsync(
+        string inputRoot,
+        string graphRoot,
+        string graphJsonPath,
+        GraphifyExecution priorExecution,
+        CancellationToken cancellationToken)
+    {
+        var command = options.Value.GraphifyCommand;
+        if (string.IsNullOrWhiteSpace(command))
+        {
+            return priorExecution;
+        }
+
+        var arguments = $"cluster-only \"{inputRoot}\" --graph \"{graphJsonPath}\" --no-label";
+        var clusterAttempt = await RunGraphifyAsync(command, arguments, inputRoot, graphRoot, cancellationToken);
+
+        var attempts = priorExecution.Attempts
+            .Append(clusterAttempt.ToAttempt("Pós-processamento automático com cluster-only para gerar a visualização HTML."))
+            .ToArray();
+
+        return clusterAttempt with
+        {
+            Attempts = attempts
+        };
     }
 
     private static async Task<GraphifyExecution> RunGraphifyAsync(
