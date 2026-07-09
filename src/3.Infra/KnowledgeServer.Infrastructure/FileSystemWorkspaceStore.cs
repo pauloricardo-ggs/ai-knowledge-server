@@ -330,43 +330,40 @@ public sealed class FileSystemWorkspaceStore(IOptions<WorkspaceOptions> options)
         string? error,
         CancellationToken cancellationToken)
     {
-        var workspace = await GetOrCreateWorkspaceAsync(workspaceId, cancellationToken);
-        var jobsDirectory = Path.Combine(workspace.RootPath, "cache", "jobs");
-        if (!Directory.Exists(jobsDirectory))
-        {
-            return null;
-        }
-
-        foreach (var file in Directory.EnumerateFiles(jobsDirectory, "*.json"))
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-
-            var json = await File.ReadAllTextAsync(file, cancellationToken);
-            var job = JsonSerializer.Deserialize<IndexingJob>(json, JsonOptions);
-            if (job?.Id != jobId)
+        return await UpdateIndexingJobAsync(
+            workspaceId,
+            jobId,
+            job =>
             {
-                continue;
-            }
+                var now = DateTimeOffset.UtcNow;
+                return job with
+                {
+                    Status = status,
+                    StartedAt = job.StartedAt ?? (status == "running" ? now : job.StartedAt),
+                    CompletedAt = status is "completed" or "failed" ? now : job.CompletedAt,
+                    Error = error
+                };
+            },
+            cancellationToken);
+    }
 
-            var now = DateTimeOffset.UtcNow;
-            var updated = job with
+    public async Task<IndexingJob?> UpdateIndexingJobProgressAsync(
+        string workspaceId,
+        string jobId,
+        IndexingProgress progress,
+        CancellationToken cancellationToken)
+    {
+        return await UpdateIndexingJobAsync(
+            workspaceId,
+            jobId,
+            job => job with
             {
-                Status = status,
-                StartedAt = job.StartedAt ?? (status == "running" ? now : job.StartedAt),
-                CompletedAt = status is "completed" or "failed" ? now : job.CompletedAt,
-                Error = error
-            };
-
-            await File.WriteAllTextAsync(
-                file,
-                JsonSerializer.Serialize(updated, JsonOptions),
-                Encoding.UTF8,
-                cancellationToken);
-
-            return updated;
-        }
-
-        return null;
+                Progress = progress with
+                {
+                    UpdatedAt = progress.UpdatedAt ?? DateTimeOffset.UtcNow
+                }
+            },
+            cancellationToken);
     }
 
     public async Task<Workspace?> FindWorkspaceAsync(string workspaceId, CancellationToken cancellationToken)
@@ -403,6 +400,44 @@ public sealed class FileSystemWorkspaceStore(IOptions<WorkspaceOptions> options)
             cancellationToken);
 
         return created;
+    }
+
+    private async Task<IndexingJob?> UpdateIndexingJobAsync(
+        string workspaceId,
+        string jobId,
+        Func<IndexingJob, IndexingJob> update,
+        CancellationToken cancellationToken)
+    {
+        var workspace = await GetOrCreateWorkspaceAsync(workspaceId, cancellationToken);
+        var jobsDirectory = Path.Combine(workspace.RootPath, "cache", "jobs");
+        if (!Directory.Exists(jobsDirectory))
+        {
+            return null;
+        }
+
+        foreach (var file in Directory.EnumerateFiles(jobsDirectory, "*.json"))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var json = await File.ReadAllTextAsync(file, cancellationToken);
+            var job = JsonSerializer.Deserialize<IndexingJob>(json, JsonOptions);
+            if (job?.Id != jobId)
+            {
+                continue;
+            }
+
+            var updated = update(job);
+
+            await File.WriteAllTextAsync(
+                file,
+                JsonSerializer.Serialize(updated, JsonOptions),
+                Encoding.UTF8,
+                cancellationToken);
+
+            return updated;
+        }
+
+        return null;
     }
 
     private static void EnsureWorkspaceLayout(string workspacePath)

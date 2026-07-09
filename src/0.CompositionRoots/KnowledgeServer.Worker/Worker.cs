@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using KnowledgeServer.Application;
+using KnowledgeServer.Domain;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -119,6 +120,14 @@ public sealed class Worker(
                 null,
                 cancellationToken);
 
+            await workspaceStore.UpdateIndexingJobProgressAsync(
+                job.WorkspaceId,
+                job.Id,
+                new IndexingProgress(
+                    "queued",
+                    "Job aceito pelo worker e aguardando início do pipeline."),
+                cancellationToken);
+
             try
             {
                 logger.LogInformation(
@@ -128,7 +137,21 @@ public sealed class Worker(
 
                 await indexingPipeline.IndexWorkspaceAsync(
                     job.WorkspaceId,
+                    job.Id,
                     job.Reason,
+                    progress => workspaceStore.UpdateIndexingJobProgressAsync(
+                        job.WorkspaceId,
+                        job.Id,
+                        progress,
+                        cancellationToken),
+                    cancellationToken);
+
+                await workspaceStore.UpdateIndexingJobProgressAsync(
+                    job.WorkspaceId,
+                    job.Id,
+                    new IndexingProgress(
+                        "completed",
+                        "Indexação concluída com sucesso."),
                     cancellationToken);
 
                 await workspaceStore.UpdateIndexingJobStatusAsync(
@@ -145,6 +168,14 @@ public sealed class Worker(
                     "Indexing job {JobId} for workspace {WorkspaceId} failed",
                     job.Id,
                     job.WorkspaceId);
+
+                await workspaceStore.UpdateIndexingJobProgressAsync(
+                    job.WorkspaceId,
+                    job.Id,
+                    new IndexingProgress(
+                        "failed",
+                        ex.Message),
+                    cancellationToken);
 
                 await workspaceStore.UpdateIndexingJobStatusAsync(
                     job.WorkspaceId,

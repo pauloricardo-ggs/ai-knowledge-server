@@ -221,6 +221,9 @@
             <thead>
               <tr>
                 <th>Status</th>
+                <th>Etapa</th>
+                <th>Progresso</th>
+                <th>Arquivo atual</th>
                 <th>Motivo</th>
                 <th>Origem</th>
                 <th>Criado em</th>
@@ -239,6 +242,14 @@
             <button id="jobsNextPage" type="button" class="secondary-button">Próxima</button>
           </div>
         </div>
+
+        <section class="card-surface">
+          <div class="section-heading compact">
+            <h3>Indexação em execução</h3>
+            <span id="runningIndexingBadge" class="badge">0</span>
+          </div>
+          <div id="runningIndexingList" class="stack-list"></div>
+        </section>
       </section>
 
       <section id="view-explorer" class="view-panel panel hidden">

@@ -9,4 +9,14 @@ public sealed record IndexingJob(
     DateTimeOffset CreatedAt,
     DateTimeOffset? StartedAt = null,
     DateTimeOffset? CompletedAt = null,
-    string? Error = null);
+    string? Error = null,
+    IndexingProgress? Progress = null);
+
+public sealed record IndexingProgress(
+    string Stage,
+    string Message,
+    string? CurrentPath = null,
+    int? TotalItems = null,
+    int? ProcessedItems = null,
+    IReadOnlyCollection<string>? PendingPaths = null,
+    DateTimeOffset? UpdatedAt = null);

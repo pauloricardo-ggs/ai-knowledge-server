@@ -58,6 +58,8 @@ const elements = {
   jobsPrevPage: document.querySelector("#jobsPrevPage"),
   jobsPageIndicator: document.querySelector("#jobsPageIndicator"),
   jobsNextPage: document.querySelector("#jobsNextPage"),
+  runningIndexingBadge: document.querySelector("#runningIndexingBadge"),
+  runningIndexingList: document.querySelector("#runningIndexingList"),
   viewTabs: Array.from(document.querySelectorAll(".view-tab")),
   viewPanels: Array.from(document.querySelectorAll(".view-panel")),
   includeHiddenEntries: document.querySelector("#includeHiddenEntries"),
@@ -92,6 +94,8 @@ const state = {
   jobPage: 1
 };
 
+let jobsPollingHandle = null;
+
 const setResponse = value => {
   elements.response.textContent = typeof value === "string" ? value : JSON.stringify(value, null, 2);
 };
@@ -113,6 +117,28 @@ const formatSize = value => {
 
   return `${(value / (1024 * 1024)).toFixed(1)} MB`;
 };
+
+const progressPercent = progress => {
+  if (!progress || !Number.isFinite(progress.totalItems) || progress.totalItems <= 0) {
+    return null;
+  }
+
+  const processed = Number.isFinite(progress.processedItems) ? progress.processedItems : 0;
+  return Math.max(0, Math.min(100, Math.round((processed / progress.totalItems) * 100)));
+};
+
+const stageLabel = stage => ({
+  queued: "Na fila",
+  preparing: "Preparando",
+  "code-intelligence": "Code intelligence",
+  graphify: "Graphify",
+  chunking: "Chunking",
+  embeddings: "Embeddings",
+  qdrant: "Qdrant",
+  summary: "Resumo",
+  completed: "Concluído",
+  failed: "Falhou"
+}[stage] ?? stage ?? "-");
 
 const escapeHtml = value => value
   .replaceAll("&", "&amp;")
@@ -194,6 +220,7 @@ const loadWorkspace = async () => {
   renderResources();
   renderJobs();
   await refreshWorkspaces();
+  ensureJobsPolling();
 };
 
 const renderDashboard = () => {
@@ -305,6 +332,7 @@ const filteredJobs = () => {
 
 const renderJobs = () => {
   const jobs = filteredJobs();
+  const runningJobs = state.jobs.filter(job => job.status === "running" || job.status === "queued");
   const pageSize = Number.parseInt(elements.jobPageSize.value, 10) || 10;
   const totalPages = Math.max(1, Math.ceil(jobs.length / pageSize));
   state.jobPage = Math.min(state.jobPage, totalPages);
@@ -315,14 +343,28 @@ const renderJobs = () => {
 
   if (currentPageItems.length === 0) {
     const row = document.createElement("tr");
-    row.innerHTML = '<td colspan="5">Nenhum job encontrado com os filtros atuais.</td>';
+    row.innerHTML = '<td colspan="8">Nenhum job encontrado com os filtros atuais.</td>';
     elements.jobsTableBody.append(row);
   }
 
   for (const job of currentPageItems) {
+    const percent = progressPercent(job.progress);
+    const progressDetails = job.progress
+      ? `
+        <div class="progress-meta">
+          <strong>${job.progress.processedItems ?? 0}${Number.isFinite(job.progress.totalItems) ? ` / ${job.progress.totalItems}` : ""}</strong>
+          ${percent !== null ? `<div class="progress-bar"><span style="width:${percent}%"></span></div>` : ""}
+          <span class="muted-text">${escapeHtml(job.progress.message ?? "")}</span>
+        </div>
+      `
+      : "-";
+
     const row = document.createElement("tr");
     row.innerHTML = `
       <td><span class="status-pill ${job.status}">${job.status}</span></td>
+      <td>${escapeHtml(stageLabel(job.progress?.stage))}</td>
+      <td>${progressDetails}</td>
+      <td><span class="mono-inline">${escapeHtml(job.progress?.currentPath ?? "-")}</span></td>
       <td>${escapeHtml(job.reason)}</td>
       <td><span class="mono-inline">${escapeHtml(job.sourcePath)}</span></td>
       <td>${formatDateTime(job.createdAt)}</td>
@@ -335,6 +377,30 @@ const renderJobs = () => {
   elements.jobsPageIndicator.textContent = `Página ${state.jobPage} de ${totalPages}`;
   elements.jobsPrevPage.disabled = state.jobPage <= 1;
   elements.jobsNextPage.disabled = state.jobPage >= totalPages;
+
+  elements.runningIndexingBadge.textContent = String(runningJobs.length);
+  if (runningJobs.length === 0) {
+    renderEmptyState(elements.runningIndexingList, "Nenhuma indexação em andamento.");
+    return;
+  }
+
+  elements.runningIndexingList.innerHTML = runningJobs.map(job => {
+    const percent = progressPercent(job.progress);
+    const pendingPaths = job.progress?.pendingPaths ?? [];
+    return `
+      <article>
+        <div class="section-heading compact">
+          <span class="status-pill ${job.status}">${job.status}</span>
+          <span class="muted-text">${stageLabel(job.progress?.stage)}</span>
+        </div>
+        <strong>${escapeHtml(job.progress?.message ?? job.reason)}</strong>
+        <span class="mono-inline">${escapeHtml(job.progress?.currentPath ?? job.sourcePath)}</span>
+        ${percent !== null ? `<div class="progress-bar"><span style="width:${percent}%"></span></div>` : ""}
+        <span class="muted-text">${job.progress?.processedItems ?? 0}${Number.isFinite(job.progress?.totalItems) ? ` de ${job.progress.totalItems}` : ""}</span>
+        ${pendingPaths.length > 0 ? `<span class="muted-text">Próximos: ${escapeHtml(pendingPaths.join(", "))}</span>` : ""}
+      </article>
+    `;
+  }).join("");
 };
 
 const refreshExplorer = async (nextPath = state.explorerPath) => {
@@ -434,7 +500,7 @@ const openFilePreview = async relativePath => {
   elements.filePreview.textContent = `${state.preview.content ?? ""}${suffix}`;
 };
 
-const graphifyUrl = workspaceId => `/workspaces/${encodeURIComponent(workspaceId)}/graphify`;
+const graphifyUrl = workspaceId => `/workspaces/${encodeURIComponent(workspaceId)}/graphify/index.html`;
 
 const refreshGraphify = async () => {
   const workspaceId = elements.workspaceId.value.trim() || "default";
@@ -491,6 +557,28 @@ const renderGraphify = () => {
   elements.graphifyEmptyState.classList.remove("hidden");
   elements.graphifyFrame.classList.add("hidden");
   elements.graphifyFrame.removeAttribute("src");
+};
+
+const refreshJobState = async () => {
+  const workspaceId = elements.workspaceId.value.trim() || "default";
+  const jobsResponse = await fetch(`/workspaces/${encodeURIComponent(workspaceId)}/jobs`);
+  state.jobs = await jobsResponse.json();
+  renderDashboard();
+  renderJobs();
+
+  if (state.activeView === "graphify") {
+    await refreshGraphify();
+  }
+};
+
+const ensureJobsPolling = () => {
+  if (jobsPollingHandle !== null) {
+    return;
+  }
+
+  jobsPollingHandle = window.setInterval(() => {
+    refreshJobState().catch(() => {});
+  }, 3000);
 };
 
 const currentArguments = () => {

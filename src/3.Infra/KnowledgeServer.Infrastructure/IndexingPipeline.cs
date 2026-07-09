@@ -24,20 +24,35 @@ public sealed class IndexingPipeline(
 
     public async Task IndexWorkspaceAsync(
         string workspaceId,
+        string jobId,
         string reason,
+        Func<IndexingProgress, Task> reportProgressAsync,
         CancellationToken cancellationToken)
     {
         var workspace = await workspaceStore.GetOrCreateWorkspaceAsync(workspaceId, cancellationToken);
 
+        await reportProgressAsync(new IndexingProgress(
+            "preparing",
+            "Preparando pipeline de indexação.",
+            workspace.RootPath));
+
+        await reportProgressAsync(new IndexingProgress(
+            "code-intelligence",
+            "Gerando artefatos determinísticos de código.",
+            "repositories/"));
         await codeIntelligenceService.GenerateAsync(
             new CodeIntelligenceRequest(workspace.Id),
             cancellationToken);
 
+        await reportProgressAsync(new IndexingProgress(
+            "graphify",
+            "Gerando grafo do workspace.",
+            "graphs/"));
         await graphifyService.GenerateAsync(
             new GraphifyRequest(workspace.Id),
             cancellationToken);
 
-        var chunks = await BuildChunksAsync(workspace, cancellationToken);
+        var chunks = await BuildChunksAsync(workspace, reportProgressAsync, cancellationToken);
 
         var chunksPath = Path.Combine(workspace.RootPath, "embeddings", "chunks.json");
         Directory.CreateDirectory(Path.GetDirectoryName(chunksPath)!);
@@ -50,15 +65,43 @@ public sealed class IndexingPipeline(
         if (chunks.Count == 0)
         {
             logger.LogInformation("Workspace {WorkspaceId} has no chunks to index", workspace.Id);
+            await reportProgressAsync(new IndexingProgress(
+                "chunking",
+                "Nenhum chunk foi gerado para indexação.",
+                null,
+                0,
+                0,
+                []));
             return;
         }
 
+        await reportProgressAsync(new IndexingProgress(
+            "embeddings",
+            "Garantindo modelos de embedding.",
+            "embeddings/"));
         await ollamaClient.EnsureModelsAsync(cancellationToken);
 
         var embedded = new List<QdrantClient.EmbeddedChunk>();
-        foreach (var chunk in chunks)
+        for (var index = 0; index < chunks.Count; index++)
         {
             cancellationToken.ThrowIfCancellationRequested();
+
+            var chunk = chunks.ElementAt(index);
+            var pendingPaths = chunks
+                .Skip(index + 1)
+                .Select(item => item.RelativePath)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .Take(8)
+                .ToArray();
+
+            await reportProgressAsync(new IndexingProgress(
+                "embeddings",
+                "Gerando embedding para chunk.",
+                chunk.RelativePath,
+                chunks.Count,
+                index,
+                pendingPaths));
+
             var vector = await ollamaClient.EmbedAsync(chunk.Content, cancellationToken);
             if (vector.Length == 0)
             {
@@ -71,14 +114,35 @@ public sealed class IndexingPipeline(
         if (embedded.Count == 0)
         {
             logger.LogWarning("No embeddings generated for workspace {WorkspaceId}", workspace.Id);
+            await reportProgressAsync(new IndexingProgress(
+                "embeddings",
+                "Nenhum embedding foi gerado.",
+                null,
+                chunks.Count,
+                embedded.Count,
+                []));
             return;
         }
 
+        await reportProgressAsync(new IndexingProgress(
+            "qdrant",
+            "Garantindo collection do Qdrant.",
+            QdrantClient.CollectionName(workspace.Id),
+            embedded.Count,
+            embedded.Count,
+            []));
         await qdrantClient.EnsureCollectionAsync(
             workspace.Id,
             embedded[0].Vector.Length,
             cancellationToken);
 
+        await reportProgressAsync(new IndexingProgress(
+            "qdrant",
+            "Persistindo vetores no Qdrant.",
+            QdrantClient.CollectionName(workspace.Id),
+            embedded.Count,
+            embedded.Count,
+            []));
         await qdrantClient.UpsertAsync(workspace.Id, embedded, cancellationToken);
 
         var summaryPath = Path.Combine(workspace.RootPath, "summaries", "indexing-summary.json");
@@ -95,40 +159,66 @@ public sealed class IndexingPipeline(
             }, JsonOptions),
             Encoding.UTF8,
             cancellationToken);
+
+        await reportProgressAsync(new IndexingProgress(
+            "summary",
+            "Resumo final de indexação gravado.",
+            Path.GetRelativePath(workspace.RootPath, summaryPath),
+            embedded.Count,
+            embedded.Count,
+            []));
     }
 
     private static async Task<IReadOnlyCollection<KnowledgeChunk>> BuildChunksAsync(
         Workspace workspace,
+        Func<IndexingProgress, Task> reportProgressAsync,
         CancellationToken cancellationToken)
     {
         var chunks = new List<KnowledgeChunk>();
+        var files = IndexedRoots
+            .Select(rootName => Path.Combine(workspace.RootPath, rootName))
+            .Where(Directory.Exists)
+            .SelectMany(root => Directory.EnumerateFiles(root, "*", SearchOption.AllDirectories))
+            .Where(file => !IsIgnored(file) && IsSupported(file))
+            .OrderBy(file => file, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
 
-        foreach (var rootName in IndexedRoots)
+        for (var index = 0; index < files.Length; index++)
         {
-            var root = Path.Combine(workspace.RootPath, rootName);
-            if (!Directory.Exists(root))
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var file = files[index];
+            var relativePath = Path.GetRelativePath(workspace.RootPath, file);
+            var pendingPaths = files
+                .Skip(index + 1)
+                .Select(path => Path.GetRelativePath(workspace.RootPath, path))
+                .Take(8)
+                .ToArray();
+
+            await reportProgressAsync(new IndexingProgress(
+                "chunking",
+                "Lendo arquivos para gerar chunks.",
+                relativePath,
+                files.Length,
+                index,
+                pendingPaths));
+
+            var content = await TryReadAsync(file, cancellationToken);
+            if (string.IsNullOrWhiteSpace(content))
             {
                 continue;
             }
 
-            foreach (var file in Directory.EnumerateFiles(root, "*", SearchOption.AllDirectories))
-            {
-                cancellationToken.ThrowIfCancellationRequested();
-
-                if (IsIgnored(file) || !IsSupported(file))
-                {
-                    continue;
-                }
-
-                var content = await TryReadAsync(file, cancellationToken);
-                if (string.IsNullOrWhiteSpace(content))
-                {
-                    continue;
-                }
-
-                chunks.AddRange(SplitFile(workspace, file, content));
-            }
+            chunks.AddRange(SplitFile(workspace, file, content));
         }
+
+        await reportProgressAsync(new IndexingProgress(
+            "chunking",
+            "Geração de chunks concluída.",
+            null,
+            files.Length,
+            files.Length,
+            []));
 
         return chunks;
     }

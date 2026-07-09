@@ -241,14 +241,26 @@ app.MapGet("/workspaces/{workspaceId}/files/content", async (
         content));
 });
 
-app.MapGet("/workspaces/{workspaceId}/graphify", (string workspaceId, IConfiguration configuration) =>
+app.MapGet("/workspaces/{workspaceId}/graphify", (string workspaceId) =>
+    Results.Redirect($"/workspaces/{workspaceId}/graphify/index.html"));
+
+app.MapGet("/workspaces/{workspaceId}/graphify/{**assetPath}", (
+    string workspaceId,
+    string? assetPath,
+    IConfiguration configuration) =>
 {
     var root = configuration[$"{WorkspaceOptions.SectionName}:RootPath"]
         ?? "/app/workspaces";
-    var graphPath = Path.Combine(root, workspaceId, "graphs", "index.html");
+    var graphRoot = Path.Combine(root, workspaceId, "graphs");
+    var resolvedPath = TryResolveWorkspacePath(graphRoot, string.IsNullOrWhiteSpace(assetPath) ? "index.html" : assetPath);
 
-    IResult result = File.Exists(graphPath)
-        ? Results.File(graphPath, "text/html")
+    if (resolvedPath is null)
+    {
+        return Results.BadRequest(new { message = "Invalid graph asset path." });
+    }
+
+    IResult result = File.Exists(resolvedPath)
+        ? Results.File(resolvedPath, GetContentType(resolvedPath))
         : Results.NotFound(new
         {
             message = "Graphify HTML ainda não foi gerado para este workspace.",
@@ -469,6 +481,14 @@ static async Task<(string? Content, bool Truncated)> ReadPreviewAsync(string pat
     var truncated = read > maxChars;
     var length = Math.Min(read, maxChars);
     return (new string(buffer, 0, length), truncated);
+}
+
+static string GetContentType(string path)
+{
+    var provider = new Microsoft.AspNetCore.StaticFiles.FileExtensionContentTypeProvider();
+    return provider.TryGetContentType(path, out var contentType)
+        ? contentType
+        : "application/octet-stream";
 }
 
 internal sealed record RegisterRepositoryRequest(

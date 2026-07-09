@@ -56,4 +56,10 @@ public interface IWorkspaceStore
         string status,
         string? error,
         CancellationToken cancellationToken);
+
+    Task<IndexingJob?> UpdateIndexingJobProgressAsync(
+        string workspaceId,
+        string jobId,
+        IndexingProgress progress,
+        CancellationToken cancellationToken);
 }
