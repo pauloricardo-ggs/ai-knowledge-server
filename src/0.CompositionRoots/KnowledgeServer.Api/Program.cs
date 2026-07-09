@@ -160,6 +160,87 @@ app.MapGet("/workspaces/{workspaceId}/jobs", async (
     return Results.Ok(jobs);
 });
 
+app.MapGet("/workspaces/{workspaceId}/files", async (
+    string workspaceId,
+    string? path,
+    bool includeHidden,
+    IWorkspaceStore workspaceStore,
+    CancellationToken cancellationToken) =>
+{
+    var workspace = await workspaceStore.GetOrCreateWorkspaceAsync(workspaceId, cancellationToken);
+    var targetPath = TryResolveWorkspacePath(workspace.RootPath, path);
+    if (targetPath is null)
+    {
+        return Results.BadRequest(new { message = "Invalid workspace path." });
+    }
+
+    if (File.Exists(targetPath))
+    {
+        return Results.BadRequest(new { message = "The requested path points to a file. Use the content endpoint instead." });
+    }
+
+    if (!Directory.Exists(targetPath))
+    {
+        return Results.NotFound(new { message = "Directory not found." });
+    }
+
+    var currentPath = ToWorkspaceRelativePath(workspace.RootPath, targetPath);
+    var entries = Directory
+        .EnumerateFileSystemEntries(targetPath)
+        .Where(entry => includeHidden || !Path.GetFileName(entry).StartsWith(".", StringComparison.Ordinal))
+        .Select(entry => ToWorkspaceFileEntry(workspace.RootPath, entry))
+        .OrderBy(entry => entry.EntryType == "directory" ? 0 : 1)
+        .ThenBy(entry => entry.Name, StringComparer.OrdinalIgnoreCase)
+        .ToArray();
+
+    return Results.Ok(new WorkspaceDirectoryView(
+        workspace.Id,
+        currentPath,
+        ParentWorkspacePath(currentPath),
+        BuildBreadcrumbs(currentPath),
+        entries));
+});
+
+app.MapGet("/workspaces/{workspaceId}/files/content", async (
+    string workspaceId,
+    string path,
+    IWorkspaceStore workspaceStore,
+    CancellationToken cancellationToken) =>
+{
+    var workspace = await workspaceStore.GetOrCreateWorkspaceAsync(workspaceId, cancellationToken);
+    var targetPath = TryResolveWorkspacePath(workspace.RootPath, path);
+    if (targetPath is null)
+    {
+        return Results.BadRequest(new { message = "Invalid workspace path." });
+    }
+
+    if (!File.Exists(targetPath))
+    {
+        return Results.NotFound(new { message = "File not found." });
+    }
+
+    var info = new FileInfo(targetPath);
+    var relativePath = ToWorkspaceRelativePath(workspace.RootPath, targetPath);
+    var previewSupported = IsPreviewSupported(targetPath);
+
+    string? content = null;
+    var truncated = false;
+    if (previewSupported)
+    {
+        (content, truncated) = await ReadPreviewAsync(targetPath, cancellationToken);
+    }
+
+    return Results.Ok(new WorkspaceFilePreview(
+        workspace.Id,
+        relativePath,
+        info.Name,
+        info.Length,
+        info.LastWriteTimeUtc,
+        previewSupported,
+        truncated,
+        content));
+});
+
 app.MapGet("/workspaces/{workspaceId}/graphify", (string workspaceId, IConfiguration configuration) =>
 {
     var root = configuration[$"{WorkspaceOptions.SectionName}:RootPath"]
@@ -277,6 +358,119 @@ app.MapGet("/mcp/info", () => Results.Ok(new
 
 app.Run();
 
+static string? TryResolveWorkspacePath(string workspaceRoot, string? relativePath)
+{
+    var normalized = string.IsNullOrWhiteSpace(relativePath)
+        ? "."
+        : relativePath.Replace('\\', '/').Trim();
+
+    if (normalized is "." or "/")
+    {
+        return workspaceRoot;
+    }
+
+    var segments = normalized
+        .Split('/', StringSplitOptions.RemoveEmptyEntries)
+        .Where(segment => segment != "." && segment != "..");
+
+    var candidate = Path.GetFullPath(Path.Combine(workspaceRoot, Path.Combine(segments.ToArray())));
+    return candidate.StartsWith(workspaceRoot, StringComparison.OrdinalIgnoreCase)
+        ? candidate
+        : null;
+}
+
+static string ToWorkspaceRelativePath(string workspaceRoot, string targetPath)
+{
+    var relative = Path.GetRelativePath(workspaceRoot, targetPath).Replace('\\', '/');
+    return relative == "." ? string.Empty : relative;
+}
+
+static string? ParentWorkspacePath(string currentPath)
+{
+    if (string.IsNullOrWhiteSpace(currentPath))
+    {
+        return null;
+    }
+
+    var parent = Path.GetDirectoryName(currentPath.Replace('/', Path.DirectorySeparatorChar))
+        ?.Replace('\\', '/');
+
+    return string.IsNullOrWhiteSpace(parent) ? string.Empty : parent;
+}
+
+static WorkspaceFileEntry ToWorkspaceFileEntry(string workspaceRoot, string targetPath)
+{
+    var relativePath = ToWorkspaceRelativePath(workspaceRoot, targetPath);
+
+    if (Directory.Exists(targetPath))
+    {
+        var directory = new DirectoryInfo(targetPath);
+        return new WorkspaceFileEntry(
+            relativePath,
+            directory.Name,
+            "directory",
+            null,
+            directory.LastWriteTimeUtc,
+            false);
+    }
+
+    var file = new FileInfo(targetPath);
+    return new WorkspaceFileEntry(
+        relativePath,
+        file.Name,
+        "file",
+        file.Length,
+        file.LastWriteTimeUtc,
+        IsPreviewSupported(targetPath));
+}
+
+static IReadOnlyList<WorkspaceBreadcrumb> BuildBreadcrumbs(string currentPath)
+{
+    var breadcrumbs = new List<WorkspaceBreadcrumb>
+    {
+        new("workspace", string.Empty)
+    };
+
+    if (string.IsNullOrWhiteSpace(currentPath))
+    {
+        return breadcrumbs;
+    }
+
+    var segments = currentPath.Split('/', StringSplitOptions.RemoveEmptyEntries);
+    var pathParts = new List<string>();
+    foreach (var segment in segments)
+    {
+        pathParts.Add(segment);
+        breadcrumbs.Add(new WorkspaceBreadcrumb(segment, string.Join('/', pathParts)));
+    }
+
+    return breadcrumbs;
+}
+
+static bool IsPreviewSupported(string path)
+{
+    var extension = Path.GetExtension(path);
+    return FileSystemWorkspaceStore.SupportedTextExtensions.Contains(extension, StringComparer.OrdinalIgnoreCase)
+        || extension.Equals(".log", StringComparison.OrdinalIgnoreCase)
+        || extension.Equals(".html", StringComparison.OrdinalIgnoreCase)
+        || extension.Equals(".xml", StringComparison.OrdinalIgnoreCase)
+        || extension.Equals(".js", StringComparison.OrdinalIgnoreCase)
+        || extension.Equals(".css", StringComparison.OrdinalIgnoreCase);
+}
+
+static async Task<(string? Content, bool Truncated)> ReadPreviewAsync(string path, CancellationToken cancellationToken)
+{
+    const int maxChars = 200_000;
+
+    await using var stream = File.OpenRead(path);
+    using var reader = new StreamReader(stream, Encoding.UTF8, detectEncodingFromByteOrderMarks: true);
+    var buffer = new char[maxChars + 1];
+    var read = await reader.ReadBlockAsync(buffer.AsMemory(0, maxChars + 1), cancellationToken);
+    var truncated = read > maxChars;
+    var length = Math.Min(read, maxChars);
+    return (new string(buffer, 0, length), truncated);
+}
+
 internal sealed record RegisterRepositoryRequest(
     string Name,
     string? RelativePath = null,
@@ -299,6 +493,33 @@ internal sealed record JsonRpcError(
     [property: JsonPropertyName("code")] int Code,
     [property: JsonPropertyName("message")] string Message,
     [property: JsonPropertyName("data")] object? Data = null);
+
+internal sealed record WorkspaceDirectoryView(
+    string WorkspaceId,
+    string CurrentPath,
+    string? ParentPath,
+    IReadOnlyList<WorkspaceBreadcrumb> Breadcrumbs,
+    IReadOnlyList<WorkspaceFileEntry> Entries);
+
+internal sealed record WorkspaceBreadcrumb(string Name, string RelativePath);
+
+internal sealed record WorkspaceFileEntry(
+    string RelativePath,
+    string Name,
+    string EntryType,
+    long? SizeBytes,
+    DateTimeOffset LastModifiedAt,
+    bool PreviewSupported);
+
+internal sealed record WorkspaceFilePreview(
+    string WorkspaceId,
+    string RelativePath,
+    string FileName,
+    long SizeBytes,
+    DateTimeOffset LastModifiedAt,
+    bool PreviewSupported,
+    bool Truncated,
+    string? Content);
 
 internal sealed record OpenAiModelsResponse(
     [property: JsonPropertyName("data")] IReadOnlyCollection<OpenAiModel> Data,
@@ -341,6 +562,7 @@ internal sealed record OpenAiChatCompletionResponse(
                     0,
                     new OpenAiAssistantMessage("assistant", answer),
                     "stop")
+
             ],
             new OpenAiUsage(
                 EstimateTokens(prompt),

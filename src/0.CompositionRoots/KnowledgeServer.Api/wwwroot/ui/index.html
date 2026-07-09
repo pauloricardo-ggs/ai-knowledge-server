@@ -1,144 +1,332 @@
 <!doctype html>
-<html lang="en">
+<html lang="pt-BR">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>AI Knowledge Server</title>
+  <title>AI Knowledge Server Admin</title>
   <link rel="stylesheet" href="/ui/styles.css">
 </head>
 <body>
   <main class="shell">
     <aside class="sidebar">
-      <div>
+      <div class="brand-block">
         <p class="eyebrow">AI Knowledge Server</p>
-        <h1>Knowledge portal</h1>
+        <h1>Painel operacional</h1>
+        <p>Administração de workspaces, visibilidade de indexação e inspeção de artefatos.</p>
       </div>
 
-      <label>
-        Workspace
-        <input id="workspaceId" value="default" autocomplete="off">
-      </label>
+      <section class="sidebar-section workspace-selector">
+        <label>
+          Workspace ativo
+          <input id="workspaceId" value="default" autocomplete="off">
+        </label>
 
-      <label>
-        Tool
-        <select id="toolName">
-          <option value="search_business_rules">Search business rules</option>
-          <option value="find_related_code">Find related code</option>
-          <option value="get_service_summary">Get service summary</option>
-          <option value="explain_flow">Explain flow</option>
-          <option value="find_references">Find references</option>
-          <option value="find_impacted_services">Find impacted services</option>
-          <option value="compare_business_rule_with_code">Compare rule with code</option>
-          <option value="find_divergences">Find divergences</option>
-        </select>
-      </label>
+        <div class="quick-actions stack-actions">
+          <button id="openWorkspace" type="button">Abrir workspace</button>
+          <button id="refreshWorkspaces" type="button">Atualizar dados</button>
+          <a href="/mcp/info" target="_blank" rel="noreferrer">MCP info</a>
+        </div>
+      </section>
 
-      <div class="quick-actions">
-        <button id="refreshWorkspaces" type="button">Refresh</button>
-        <a href="/mcp/info">MCP info</a>
-      </div>
+      <section class="sidebar-section stat-grid" id="workspaceSnapshot">
+        <article class="metric-card">
+          <span class="metric-label">Repositórios</span>
+          <strong id="metricRepositories">0</strong>
+        </article>
+        <article class="metric-card">
+          <span class="metric-label">Documentos</span>
+          <strong id="metricDocuments">0</strong>
+        </article>
+        <article class="metric-card">
+          <span class="metric-label">Jobs</span>
+          <strong id="metricJobs">0</strong>
+        </article>
+        <article class="metric-card">
+          <span class="metric-label">Último status</span>
+          <strong id="metricLastJobStatus">-</strong>
+        </article>
+      </section>
 
-      <section>
-        <h2>Workspaces</h2>
-        <ul id="workspaces" class="list"></ul>
+      <section class="sidebar-section">
+        <div class="section-heading compact">
+          <h2>Workspaces</h2>
+          <span id="workspaceCountBadge" class="badge">0</span>
+        </div>
+        <ul id="workspaces" class="list workspace-list"></ul>
       </section>
     </aside>
 
-    <section class="panel admin-panel">
-      <div class="toolbar">
+    <section class="main-panel">
+      <header class="hero panel">
         <div>
-          <h2>Admin</h2>
-          <p>Create workspaces, register repositories, upload documents, and trigger reindexing.</p>
+          <p class="eyebrow">Admin Console</p>
+          <h2 id="heroWorkspaceTitle">Workspace default</h2>
+          <p id="heroWorkspaceSubtitle">Acompanhe indexação, navegue pelos arquivos e gerencie ativos do workspace.</p>
         </div>
-      </div>
-
-      <div class="admin-grid">
-        <label>
-          New workspace
-          <input id="newWorkspaceId" placeholder="project-a" autocomplete="off">
-        </label>
-        <button id="createWorkspace" type="button">Create workspace</button>
-      </div>
-
-      <div class="admin-grid">
-        <label>
-          Repository name
-          <input id="repositoryName" placeholder="backend-api" autocomplete="off">
-        </label>
-        <label>
-          Relative path
-          <input id="repositoryPath" placeholder="repositories/backend-api" autocomplete="off">
-        </label>
-        <label>
-          Remote URL
-          <input id="repositoryRemote" placeholder="git@github.com:org/repo.git" autocomplete="off">
-        </label>
-        <label>
-          Branch
-          <input id="repositoryBranch" placeholder="main" autocomplete="off">
-        </label>
-        <button id="registerRepository" type="button">Register repository</button>
-      </div>
-
-      <div class="admin-grid">
-        <label>
-          Document category
-          <input id="documentCategory" value="raw" autocomplete="off">
-        </label>
-        <label>
-          Document file
-          <input id="documentFile" type="file">
-        </label>
-        <button id="uploadDocument" type="button">Upload document</button>
-        <button id="reindexWorkspace" type="button">Reindex workspace</button>
-      </div>
-
-      <div class="admin-columns">
-        <section>
-          <h2>Repositories</h2>
-          <ul id="repositories" class="list"></ul>
-        </section>
-        <section>
-          <h2>Documents</h2>
-          <ul id="documents" class="list"></ul>
-        </section>
-      </div>
-    </section>
-
-    <section class="panel chat-panel">
-      <div class="toolbar">
-        <div>
-          <h2>Ask local knowledge</h2>
-          <p>Calls the HTTP JSON-RPC MCP gateway at <code>/mcp</code>.</p>
+        <div class="hero-actions">
+          <button id="reindexWorkspace" type="button">Reindexar workspace</button>
+          <button id="initialize" type="button" class="secondary-button">Inicializar MCP</button>
         </div>
-        <button id="initialize" type="button">Initialize</button>
-      </div>
+      </header>
 
-      <label>
-        Query
-        <textarea id="query" rows="5" placeholder="Search for a rule, service, flow, symbol, or possible divergence..."></textarea>
-      </label>
+      <nav class="view-switcher panel" aria-label="Seções do admin">
+        <button class="view-tab is-active" data-view="overview" type="button">Visão geral</button>
+        <button class="view-tab" data-view="management" type="button">Gerenciamento</button>
+        <button class="view-tab" data-view="jobs" type="button">Jobs</button>
+        <button class="view-tab" data-view="explorer" type="button">Workspace explorer</button>
+        <button class="view-tab" data-view="tools" type="button">Ferramentas MCP</button>
+      </nav>
 
-      <div id="compareFields" class="compare-fields hidden">
+      <section id="view-overview" class="view-panel panel">
+        <div class="section-heading">
+          <div>
+            <h2>Resumo operacional</h2>
+            <p>Leitura rápida do estado do workspace selecionado.</p>
+          </div>
+        </div>
+
+        <div id="overviewCards" class="overview-grid"></div>
+
+        <div class="overview-columns">
+          <section class="card-surface">
+            <div class="section-heading compact">
+              <h3>Últimos jobs</h3>
+              <button id="openJobsView" type="button" class="secondary-button">Abrir monitor</button>
+            </div>
+            <div id="overviewJobs" class="stack-list"></div>
+          </section>
+
+          <section class="card-surface">
+            <div class="section-heading compact">
+              <h3>Raiz do workspace</h3>
+              <button id="openExplorerRoot" type="button" class="secondary-button">Explorar</button>
+            </div>
+            <div id="overviewRootEntries" class="stack-list"></div>
+          </section>
+        </div>
+      </section>
+
+      <section id="view-management" class="view-panel panel hidden">
+        <div class="section-heading">
+          <div>
+            <h2>Gerenciamento</h2>
+            <p>Criação de workspace, registro de repositórios e upload de documentos.</p>
+          </div>
+        </div>
+
+        <div class="admin-grid admin-grid-compact">
+          <label>
+            Novo workspace
+            <input id="newWorkspaceId" placeholder="project-a" autocomplete="off">
+          </label>
+          <button id="createWorkspace" type="button">Criar workspace</button>
+        </div>
+
+        <div class="form-card-grid">
+          <section class="card-surface">
+            <h3>Registrar repositório</h3>
+            <div class="admin-grid">
+              <label>
+                Nome do repositório
+                <input id="repositoryName" placeholder="backend-api" autocomplete="off">
+              </label>
+              <label>
+                Caminho relativo
+                <input id="repositoryPath" placeholder="repositories/backend-api" autocomplete="off">
+              </label>
+              <label>
+                Remote URL
+                <input id="repositoryRemote" placeholder="git@github.com:org/repo.git" autocomplete="off">
+              </label>
+              <label>
+                Branch
+                <input id="repositoryBranch" placeholder="main" autocomplete="off">
+              </label>
+            </div>
+            <button id="registerRepository" type="button">Registrar repositório</button>
+          </section>
+
+          <section class="card-surface">
+            <h3>Enviar documento</h3>
+            <div class="admin-grid">
+              <label>
+                Categoria
+                <input id="documentCategory" value="raw" autocomplete="off">
+              </label>
+              <label>
+                Arquivo
+                <input id="documentFile" type="file">
+              </label>
+            </div>
+            <button id="uploadDocument" type="button">Enviar documento</button>
+          </section>
+        </div>
+
+        <div class="resource-columns">
+          <section class="card-surface">
+            <div class="section-heading compact">
+              <h3>Repositórios registrados</h3>
+              <span id="repositoriesBadge" class="badge">0</span>
+            </div>
+            <ul id="repositories" class="list resource-list"></ul>
+          </section>
+
+          <section class="card-surface">
+            <div class="section-heading compact">
+              <h3>Documentos</h3>
+              <span id="documentsBadge" class="badge">0</span>
+            </div>
+            <ul id="documents" class="list resource-list"></ul>
+          </section>
+        </div>
+      </section>
+
+      <section id="view-jobs" class="view-panel panel hidden">
+        <div class="section-heading">
+          <div>
+            <h2>Monitor de jobs</h2>
+            <p>Filtre por status, motivo ou caminho de origem e navegue por páginas.</p>
+          </div>
+        </div>
+
+        <div class="filters-grid">
+          <label>
+            Status
+            <select id="jobStatusFilter">
+              <option value="all">Todos</option>
+              <option value="queued">Queued</option>
+              <option value="running">Running</option>
+              <option value="completed">Completed</option>
+              <option value="failed">Failed</option>
+            </select>
+          </label>
+          <label>
+            Buscar
+            <input id="jobSearchFilter" placeholder="manual-reindex, document-uploaded, repositories/..." autocomplete="off">
+          </label>
+          <label>
+            Itens por página
+            <select id="jobPageSize">
+              <option value="5">5</option>
+              <option value="10" selected>10</option>
+              <option value="20">20</option>
+              <option value="50">50</option>
+            </select>
+          </label>
+        </div>
+
+        <div class="table-card">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>Status</th>
+                <th>Motivo</th>
+                <th>Origem</th>
+                <th>Criado em</th>
+                <th>Erro</th>
+              </tr>
+            </thead>
+            <tbody id="jobsTableBody"></tbody>
+          </table>
+        </div>
+
+        <div class="pagination-bar">
+          <span id="jobsPaginationSummary">0 resultados</span>
+          <div class="pagination-actions">
+            <button id="jobsPrevPage" type="button" class="secondary-button">Anterior</button>
+            <span id="jobsPageIndicator">Página 1</span>
+            <button id="jobsNextPage" type="button" class="secondary-button">Próxima</button>
+          </div>
+        </div>
+      </section>
+
+      <section id="view-explorer" class="view-panel panel hidden">
+        <div class="section-heading">
+          <div>
+            <h2>Workspace explorer</h2>
+            <p>Navegue pela estrutura de pastas, veja artefatos e abra arquivos suportados.</p>
+          </div>
+        </div>
+
+        <div class="explorer-toolbar">
+          <div id="explorerBreadcrumbs" class="breadcrumbs"></div>
+          <div class="quick-actions">
+            <label class="toggle-field">
+              <input id="includeHiddenEntries" type="checkbox">
+              <span>Mostrar ocultos</span>
+            </label>
+            <button id="explorerUp" type="button" class="secondary-button">Subir nível</button>
+            <button id="refreshExplorer" type="button" class="secondary-button">Atualizar</button>
+          </div>
+        </div>
+
+        <div class="explorer-layout">
+          <section class="card-surface explorer-list-surface">
+            <div class="section-heading compact">
+              <h3 id="explorerCurrentPath">workspace/</h3>
+              <span id="explorerEntryCount" class="badge">0 itens</span>
+            </div>
+            <div id="explorerEntries" class="explorer-entries"></div>
+          </section>
+
+          <section class="card-surface preview-surface">
+            <div class="section-heading compact">
+              <h3 id="previewTitle">Selecione um arquivo</h3>
+              <span id="previewMeta" class="muted-text"></span>
+            </div>
+            <article id="filePreview" class="response" aria-live="polite">Nenhum arquivo selecionado.</article>
+          </section>
+        </div>
+      </section>
+
+      <section id="view-tools" class="view-panel panel hidden">
+        <div class="toolbar">
+          <div>
+            <h2>Ferramentas MCP</h2>
+            <p>Chamadas diretas ao gateway JSON-RPC em <code>/mcp</code>.</p>
+          </div>
+        </div>
+
         <label>
-          Business rule
-          <textarea id="businessRule" rows="3"></textarea>
+          Ferramenta
+          <select id="toolName">
+            <option value="search_business_rules">Search business rules</option>
+            <option value="find_related_code">Find related code</option>
+            <option value="get_service_summary">Get service summary</option>
+            <option value="explain_flow">Explain flow</option>
+            <option value="find_references">Find references</option>
+            <option value="find_impacted_services">Find impacted services</option>
+            <option value="compare_business_rule_with_code">Compare rule with code</option>
+            <option value="find_divergences">Find divergences</option>
+          </select>
         </label>
-        <label>
-          Code query
-          <textarea id="codeQuery" rows="3"></textarea>
-        </label>
-      </div>
 
-      <div class="actions">
         <label>
-          Max results
-          <input id="maxResults" type="number" min="1" max="50" value="8">
+          Query
+          <textarea id="query" rows="5" placeholder="Search for a rule, service, flow, symbol, or possible divergence..."></textarea>
         </label>
-        <button id="send" type="button">Run tool</button>
-      </div>
 
-      <article id="response" class="response" aria-live="polite">Ready.</article>
+        <div id="compareFields" class="compare-fields hidden">
+          <label>
+            Business rule
+            <textarea id="businessRule" rows="3"></textarea>
+          </label>
+          <label>
+            Code query
+            <textarea id="codeQuery" rows="3"></textarea>
+          </label>
+        </div>
+
+        <div class="actions">
+          <label>
+            Max results
+            <input id="maxResults" type="number" min="1" max="50" value="8">
+          </label>
+          <button id="send" type="button">Executar ferramenta</button>
+        </div>
+
+        <article id="response" class="response" aria-live="polite">Pronto.</article>
+      </section>
     </section>
   </main>
 
