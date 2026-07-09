@@ -1,0 +1,43 @@
+# Build output
+bin/
+obj/
+artifacts/
+
+# .NET
+TestResults/
+*.user
+*.rsuser
+*.suo
+*.userosscache
+*.sln.docstates
+
+# IDEs
+.vs/
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Local environment
+.env
+.env.*
+!.env.example
+
+# Docker/local runtime data
+.nuget/
+
+# Workspace runtime data
+workspaces/*
+!workspaces/.gitkeep
+
+# Graphify generated outputs
+graphify-out/
+
+# Logs
+*.log
+logs/
+

@@ -1,0 +1,9 @@
+**/bin/
+**/obj/
+**/.vs/
+**/.idea/
+**/.vscode/
+.git/
+workspaces/
+.nuget/
+

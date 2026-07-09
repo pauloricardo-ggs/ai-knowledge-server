@@ -1,0 +1,7 @@
+<Solution>
+  <Project Path="src/0.CompositionRoots/KnowledgeServer.Api/KnowledgeServer.Api.csproj" />
+  <Project Path="src/0.CompositionRoots/KnowledgeServer.Worker/KnowledgeServer.Worker.csproj" />
+  <Project Path="src/2.Core/KnowledgeServer.Application/KnowledgeServer.Application.csproj" />
+  <Project Path="src/2.Core/KnowledgeServer.Domain/KnowledgeServer.Domain.csproj" />
+  <Project Path="src/3.Infra/KnowledgeServer.Infrastructure/KnowledgeServer.Infrastructure.csproj" />
+</Solution>

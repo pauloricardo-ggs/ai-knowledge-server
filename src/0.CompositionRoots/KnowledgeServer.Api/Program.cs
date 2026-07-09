@@ -1,0 +1,642 @@
+using System.Text;
+using System.Text.Json;
+using System.Text.Json.Serialization;
+using KnowledgeServer.Application;
+using KnowledgeServer.Domain;
+using KnowledgeServer.Infrastructure;
+
+var builder = WebApplication.CreateBuilder(args);
+
+builder.Services.AddKnowledgeServerInfrastructure(builder.Configuration);
+builder.Services.AddCors(options =>
+{
+    options.AddDefaultPolicy(policy =>
+    {
+        policy
+            .AllowAnyHeader()
+            .AllowAnyMethod()
+            .AllowAnyOrigin();
+    });
+});
+
+var app = builder.Build();
+
+app.UseCors();
+app.UseStaticFiles();
+
+app.MapGet("/", () => Results.Ok(new
+{
+    service = "AI Knowledge Server",
+    status = "running",
+    endpoints = new[]
+    {
+        "/health",
+        "/workspaces",
+        "/workspaces/{workspaceId}/documents",
+        "/workspaces/{workspaceId}/chat",
+        "/workspaces/{workspaceId}/jobs",
+        "/ui",
+        "/mcp",
+        "/mcp/info"
+    }
+}));
+
+app.MapGet("/health", () => Results.Ok(new
+{
+    status = "healthy",
+    checkedAt = DateTimeOffset.UtcNow
+}));
+
+app.MapGet("/workspaces", async (
+    IWorkspaceStore workspaceStore,
+    CancellationToken cancellationToken) =>
+{
+    var workspaces = await workspaceStore.ListWorkspacesAsync(cancellationToken);
+    return Results.Ok(workspaces);
+});
+
+app.MapPost("/workspaces/{workspaceId}", async (
+    string workspaceId,
+    IWorkspaceStore workspaceStore,
+    CancellationToken cancellationToken) =>
+{
+    var workspace = await workspaceStore.GetOrCreateWorkspaceAsync(workspaceId, cancellationToken);
+    return Results.Created($"/workspaces/{workspace.Id}", workspace);
+});
+
+app.MapGet("/workspaces/{workspaceId}/documents", async (
+    string workspaceId,
+    IWorkspaceStore workspaceStore,
+    CancellationToken cancellationToken) =>
+{
+    var documents = await workspaceStore.ListDocumentsAsync(workspaceId, cancellationToken);
+    return Results.Ok(documents);
+});
+
+app.MapPost("/workspaces/{workspaceId}/documents", async (
+    string workspaceId,
+    IFormFile file,
+    IWorkspaceStore workspaceStore,
+    CancellationToken cancellationToken,
+    string category = "raw") =>
+{
+    await using var stream = file.OpenReadStream();
+    var document = await workspaceStore.SaveDocumentAsync(
+        workspaceId,
+        category,
+        file.FileName,
+        stream,
+        cancellationToken);
+
+    return Results.Created($"/workspaces/{workspaceId}/documents/{document.RelativePath}", document);
+})
+.DisableAntiforgery();
+
+app.MapPost("/workspaces/{workspaceId}/chat", async (
+    string workspaceId,
+    ChatRequest request,
+    KnowledgeChatService chatService,
+    CancellationToken cancellationToken) =>
+{
+    var response = await chatService.AskAsync(workspaceId, request, cancellationToken);
+    return Results.Ok(response);
+});
+
+app.MapPost("/workspaces/{workspaceId}/jobs/reindex", async (
+    string workspaceId,
+    IWorkspaceStore workspaceStore,
+    CancellationToken cancellationToken,
+    string reason = "manual-reindex") =>
+{
+    var job = await workspaceStore.EnqueueIndexingJobAsync(
+        workspaceId,
+        reason,
+        ".",
+        cancellationToken);
+
+    return Results.Accepted($"/workspaces/{workspaceId}/jobs/{job.Id}", job);
+});
+
+app.MapGet("/workspaces/{workspaceId}/jobs", async (
+    string workspaceId,
+    IWorkspaceStore workspaceStore,
+    CancellationToken cancellationToken) =>
+{
+    var jobs = await workspaceStore.ListIndexingJobsAsync(workspaceId, cancellationToken);
+    return Results.Ok(jobs);
+});
+
+app.MapGet("/workspaces/{workspaceId}/graphify", (string workspaceId, IConfiguration configuration) =>
+{
+    var root = configuration[$"{WorkspaceOptions.SectionName}:RootPath"]
+        ?? "/app/workspaces";
+    var graphPath = Path.Combine(root, workspaceId, "graphs", "index.html");
+
+    IResult result = File.Exists(graphPath)
+        ? Results.File(graphPath, "text/html")
+        : Results.NotFound(new
+        {
+            message = "Graphify HTML ainda não foi gerado para este workspace.",
+            expectedPath = $"workspaces/{workspaceId}/graphs/index.html"
+        });
+
+    return result;
+});
+
+app.MapGet("/ui", () => Results.Redirect("/ui/index.html"));
+app.MapGet("/ui/", () => Results.Redirect("/ui/index.html"));
+
+app.MapPost("/mcp", async (
+    JsonRpcRequest request,
+    KnowledgeChatService chatService,
+    IWorkspaceStore workspaceStore,
+    CancellationToken cancellationToken) =>
+{
+    var response = await McpGateway.HandleAsync(request, chatService, workspaceStore, cancellationToken);
+    return Results.Json(response, McpGateway.JsonOptions);
+});
+
+app.MapGet("/mcp/info", () => Results.Ok(new
+{
+    name = "ai-knowledge-server",
+    transports = new[] { "http-json-rpc" },
+    endpoint = "/mcp",
+    tools = McpGateway.ToolNames
+}));
+
+app.Run();
+
+internal sealed record JsonRpcRequest(
+    [property: JsonPropertyName("jsonrpc")] string? JsonRpc,
+    [property: JsonPropertyName("id")] JsonElement? Id,
+    [property: JsonPropertyName("method")] string? Method,
+    [property: JsonPropertyName("params")] JsonElement? Params);
+
+internal sealed record JsonRpcResponse(
+    [property: JsonPropertyName("jsonrpc")] string JsonRpc,
+    [property: JsonPropertyName("id")] JsonElement? Id,
+    [property: JsonPropertyName("result")] object? Result = null,
+    [property: JsonPropertyName("error")] JsonRpcError? Error = null);
+
+internal sealed record JsonRpcError(
+    [property: JsonPropertyName("code")] int Code,
+    [property: JsonPropertyName("message")] string Message,
+    [property: JsonPropertyName("data")] object? Data = null);
+
+internal static class McpGateway
+{
+    public static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
+    {
+        WriteIndented = false,
+        DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull
+    };
+
+    public static readonly string[] ToolNames =
+    [
+        "search_business_rules",
+        "find_related_code",
+        "get_service_summary",
+        "explain_flow",
+        "find_references",
+        "find_impacted_services",
+        "compare_business_rule_with_code",
+        "find_divergences"
+    ];
+
+    public static async Task<JsonRpcResponse> HandleAsync(
+        JsonRpcRequest request,
+        KnowledgeChatService chatService,
+        IWorkspaceStore workspaceStore,
+        CancellationToken cancellationToken)
+    {
+        if (request.JsonRpc is not null && request.JsonRpc != "2.0")
+        {
+            return Error(request.Id, -32600, "Invalid JSON-RPC version. Expected 2.0.");
+        }
+
+        return request.Method switch
+        {
+            "initialize" => Success(request.Id, Initialize()),
+            "tools/list" => Success(request.Id, new { tools = Tools() }),
+            "tools/call" => Success(
+                request.Id,
+                await CallToolAsync(request.Params, chatService, workspaceStore, cancellationToken)),
+            null or "" => Error(request.Id, -32600, "JSON-RPC method is required."),
+            _ => Error(request.Id, -32601, $"Method '{request.Method}' is not supported.")
+        };
+    }
+
+    private static object Initialize() => new
+    {
+        protocolVersion = "2024-11-05",
+        capabilities = new
+        {
+            tools = new { }
+        },
+        serverInfo = new
+        {
+            name = "ai-knowledge-server",
+            version = "0.1.0"
+        }
+    };
+
+    private static IReadOnlyCollection<object> Tools() =>
+    [
+        Tool(
+            "search_business_rules",
+            "Searches local workspace documents for business rules and policy-like references.",
+            ["workspaceId", "query", "maxResults"]),
+        Tool(
+            "find_related_code",
+            "Finds candidate code files related to a feature, rule, service, class, or symbol.",
+            ["workspaceId", "query", "maxResults"]),
+        Tool(
+            "get_service_summary",
+            "Summarizes local references for a service, module, endpoint, or component.",
+            ["workspaceId", "service", "maxResults"]),
+        Tool(
+            "explain_flow",
+            "Explains a probable flow from matching workspace references.",
+            ["workspaceId", "flow", "maxResults"]),
+        Tool(
+            "find_references",
+            "Finds textual references to a symbol, endpoint, rule, file, or concept.",
+            ["workspaceId", "query", "maxResults"]),
+        Tool(
+            "find_impacted_services",
+            "Finds likely impacted services or modules for a proposed change.",
+            ["workspaceId", "query", "maxResults"]),
+        Tool(
+            "compare_business_rule_with_code",
+            "Compares a business rule description with code references found in the workspace.",
+            ["workspaceId", "businessRule", "codeQuery", "maxResults"]),
+        Tool(
+            "find_divergences",
+            "Searches for likely inconsistencies between rules, docs, summaries, and code.",
+            ["workspaceId", "query", "maxResults"])
+    ];
+
+    private static async Task<object> CallToolAsync(
+        JsonElement? parameters,
+        KnowledgeChatService chatService,
+        IWorkspaceStore workspaceStore,
+        CancellationToken cancellationToken)
+    {
+        var toolName = GetString(parameters, "name");
+        if (string.IsNullOrWhiteSpace(toolName))
+        {
+            return ToolError("Tool name is required in params.name.");
+        }
+
+        if (!ToolNames.Contains(toolName, StringComparer.Ordinal))
+        {
+            return ToolError($"Unknown tool '{toolName}'.");
+        }
+
+        var arguments = GetObject(parameters, "arguments");
+        var workspaceId = GetString(arguments, "workspaceId") ?? "default";
+        var maxResults = GetInt(arguments, "maxResults", 8);
+
+        try
+        {
+            var result = toolName switch
+            {
+                "search_business_rules" => await SearchAsync(
+                    workspaceStore,
+                    workspaceId,
+                    Query(arguments),
+                    maxResults,
+                    "Business rule search",
+                    "Search terms should describe a rule, policy, invariant, validation, or decision.",
+                    cancellationToken),
+                "find_related_code" => await SearchAsync(
+                    workspaceStore,
+                    workspaceId,
+                    Query(arguments),
+                    maxResults,
+                    "Related code search",
+                    "Search terms should identify a feature, service, class, method, endpoint, or technical concept.",
+                    cancellationToken),
+                "get_service_summary" => await SummarizeAsync(
+                    chatService,
+                    workspaceStore,
+                    workspaceId,
+                    GetString(arguments, "service") ?? Query(arguments),
+                    maxResults,
+                    "Service summary",
+                    cancellationToken),
+                "explain_flow" => await SummarizeAsync(
+                    chatService,
+                    workspaceStore,
+                    workspaceId,
+                    GetString(arguments, "flow") ?? Query(arguments),
+                    maxResults,
+                    "Flow explanation",
+                    cancellationToken),
+                "find_references" => await SearchAsync(
+                    workspaceStore,
+                    workspaceId,
+                    Query(arguments),
+                    maxResults,
+                    "Reference search",
+                    "Search terms should identify the symbol, endpoint, file, rule, or concept.",
+                    cancellationToken),
+                "find_impacted_services" => await SearchAsync(
+                    workspaceStore,
+                    workspaceId,
+                    ImpactQuery(arguments),
+                    maxResults,
+                    "Impacted services",
+                    "Search terms should describe the change, dependency, integration, or business capability.",
+                    cancellationToken),
+                "compare_business_rule_with_code" => await CompareAsync(
+                    workspaceStore,
+                    workspaceId,
+                    GetString(arguments, "businessRule") ?? Query(arguments),
+                    GetString(arguments, "codeQuery") ?? Query(arguments),
+                    maxResults,
+                    cancellationToken),
+                "find_divergences" => await SearchAsync(
+                    workspaceStore,
+                    workspaceId,
+                    DivergenceQuery(arguments),
+                    maxResults,
+                    "Divergence search",
+                    "Search terms should describe the expected rule, implementation, behavior, or mismatch.",
+                    cancellationToken),
+                _ => ToolText("Unsupported tool.")
+            };
+
+            return result;
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or JsonException)
+        {
+            return ToolText($"The tool could not read all workspace data: {exception.Message}");
+        }
+    }
+
+    private static async Task<object> SearchAsync(
+        IWorkspaceStore workspaceStore,
+        string workspaceId,
+        string query,
+        int maxResults,
+        string title,
+        string hint,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(query))
+        {
+            return ToolText($"{title}: query is required. {hint}");
+        }
+
+        var searchResults = await workspaceStore.SearchAsync(workspaceId, query, maxResults, cancellationToken);
+        var documents = await workspaceStore.ListDocumentsAsync(workspaceId, cancellationToken);
+        var jobs = await workspaceStore.ListIndexingJobsAsync(workspaceId, cancellationToken);
+
+        var text = BuildSearchText(title, workspaceId, query, searchResults, documents.Count, jobs);
+        return ToolText(text, new
+        {
+            workspaceId,
+            query,
+            results = searchResults,
+            documents = documents.Count,
+            jobs = jobs.Take(5)
+        });
+    }
+
+    private static async Task<object> SummarizeAsync(
+        KnowledgeChatService chatService,
+        IWorkspaceStore workspaceStore,
+        string workspaceId,
+        string query,
+        int maxResults,
+        string title,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(query))
+        {
+            return ToolText($"{title}: service, flow, or query is required.");
+        }
+
+        var response = await chatService.AskAsync(
+            workspaceId,
+            new ChatRequest($"Summarize and explain local knowledge about: {query}", maxResults),
+            cancellationToken);
+
+        var documents = await workspaceStore.ListDocumentsAsync(workspaceId, cancellationToken);
+        var text = new StringBuilder()
+            .AppendLine($"{title} for workspace '{workspaceId}'")
+            .AppendLine($"Query: {query}")
+            .AppendLine()
+            .AppendLine(response.Answer)
+            .AppendLine()
+            .Append(RenderReferences(response.References, documents.Count))
+            .ToString();
+
+        return ToolText(text, new
+        {
+            workspaceId,
+            query,
+            answer = response.Answer,
+            references = response.References,
+            documents = documents.Count
+        });
+    }
+
+    private static async Task<object> CompareAsync(
+        IWorkspaceStore workspaceStore,
+        string workspaceId,
+        string businessRule,
+        string codeQuery,
+        int maxResults,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(businessRule) && string.IsNullOrWhiteSpace(codeQuery))
+        {
+            return ToolText("Comparison requires businessRule, codeQuery, or query.");
+        }
+
+        var ruleQuery = string.IsNullOrWhiteSpace(businessRule) ? codeQuery : businessRule;
+        var implementationQuery = string.IsNullOrWhiteSpace(codeQuery) ? businessRule : codeQuery;
+        var ruleResults = await workspaceStore.SearchAsync(workspaceId, ruleQuery, maxResults, cancellationToken);
+        var codeResults = await workspaceStore.SearchAsync(workspaceId, implementationQuery, maxResults, cancellationToken);
+        var documents = await workspaceStore.ListDocumentsAsync(workspaceId, cancellationToken);
+
+        var text = new StringBuilder()
+            .AppendLine($"Business rule/code comparison for workspace '{workspaceId}'")
+            .AppendLine($"Business rule query: {ruleQuery}")
+            .AppendLine($"Code query: {implementationQuery}")
+            .AppendLine()
+            .AppendLine("Rule-side references:")
+            .AppendLine(RenderReferences(ruleResults, documents.Count))
+            .AppendLine()
+            .AppendLine("Code-side references:")
+            .AppendLine(RenderReferences(codeResults, documents.Count))
+            .AppendLine()
+            .AppendLine("Interpretation: treat these as candidates. A human or LLM should compare the returned snippets for missing validation, conflicting wording, or behavior implemented only on one side.")
+            .ToString();
+
+        return ToolText(text, new
+        {
+            workspaceId,
+            businessRule = ruleQuery,
+            codeQuery = implementationQuery,
+            ruleReferences = ruleResults,
+            codeReferences = codeResults,
+            documents = documents.Count
+        });
+    }
+
+    private static string BuildSearchText(
+        string title,
+        string workspaceId,
+        string query,
+        IReadOnlyCollection<SearchResult> results,
+        int documentCount,
+        IReadOnlyCollection<IndexingJob> jobs)
+    {
+        var text = new StringBuilder()
+            .AppendLine($"{title} for workspace '{workspaceId}'")
+            .AppendLine($"Query: {query}")
+            .AppendLine()
+            .Append(RenderReferences(results, documentCount));
+
+        if (results.Count == 0 && jobs.Count > 0)
+        {
+            text.AppendLine()
+                .AppendLine("Recent indexing jobs:")
+                .AppendJoin(
+                    Environment.NewLine,
+                    jobs.Take(5).Select(job => $"- {job.Status}: {job.Reason} ({job.SourcePath}) at {job.CreatedAt:u}"));
+        }
+
+        return text.ToString();
+    }
+
+    private static string RenderReferences(IReadOnlyCollection<SearchResult> references, int documentCount)
+    {
+        if (references.Count == 0)
+        {
+            return documentCount == 0
+                ? "No references found. The workspace exists but has no listed documents yet; upload documents or repository exports and reindex before asking deeper questions."
+                : $"No matching references found across {documentCount} listed document(s). Try broader terms or confirm that generated graph/summaries/code indexes exist in the workspace.";
+        }
+
+        var text = new StringBuilder();
+        foreach (var reference in references)
+        {
+            text.AppendLine($"- {reference.RelativePath} (score {reference.Score})")
+                .AppendLine($"  {reference.Snippet}");
+        }
+
+        return text.ToString();
+    }
+
+    private static object Tool(string name, string description, string[] properties) => new
+    {
+        name,
+        description,
+        inputSchema = new
+        {
+            type = "object",
+            properties = properties.ToDictionary(
+                property => property,
+                property => ToolProperty(property)),
+            required = properties.Contains("workspaceId") ? new[] { "workspaceId" } : []
+        }
+    };
+
+    private static object ToolProperty(string property) =>
+        property is "maxResults"
+            ? new { type = "integer", description = "Maximum number of references to return." }
+            : new { type = "string", description = $"{property} argument." };
+
+    private static JsonRpcResponse Success(JsonElement? id, object result) => new("2.0", id, result);
+
+    private static JsonRpcResponse Error(JsonElement? id, int code, string message, object? data = null) =>
+        new("2.0", id, Error: new JsonRpcError(code, message, data));
+
+    private static object ToolText(string text, object? structuredContent = null) => new
+    {
+        content = new[]
+        {
+            new
+            {
+                type = "text",
+                text
+            }
+        },
+        structuredContent
+    };
+
+    private static object ToolError(string text) => new
+    {
+        isError = true,
+        content = new[]
+        {
+            new
+            {
+                type = "text",
+                text
+            }
+        }
+    };
+
+    private static string Query(JsonElement? arguments) =>
+        GetString(arguments, "query")
+        ?? GetString(arguments, "message")
+        ?? GetString(arguments, "symbol")
+        ?? GetString(arguments, "path")
+        ?? "";
+
+    private static string ImpactQuery(JsonElement? arguments)
+    {
+        var query = Query(arguments);
+        var change = GetString(arguments, "change");
+        return string.Join(' ', new[] { query, change }.Where(value => !string.IsNullOrWhiteSpace(value)));
+    }
+
+    private static string DivergenceQuery(JsonElement? arguments)
+    {
+        var query = Query(arguments);
+        var expected = GetString(arguments, "expected");
+        var actual = GetString(arguments, "actual");
+        return string.Join(' ', new[] { query, expected, actual }.Where(value => !string.IsNullOrWhiteSpace(value)));
+    }
+
+    private static JsonElement? GetObject(JsonElement? element, string name)
+    {
+        if (element is not { ValueKind: JsonValueKind.Object } value)
+        {
+            return null;
+        }
+
+        return value.TryGetProperty(name, out var property) && property.ValueKind == JsonValueKind.Object
+            ? property
+            : null;
+    }
+
+    private static string? GetString(JsonElement? element, string name, string? fallback = null)
+    {
+        if (element is not { ValueKind: JsonValueKind.Object } value)
+        {
+            return fallback;
+        }
+
+        return value.TryGetProperty(name, out var property) && property.ValueKind == JsonValueKind.String
+            ? property.GetString()
+            : fallback;
+    }
+
+    private static int GetInt(JsonElement? element, string name, int fallback)
+    {
+        if (element is not { ValueKind: JsonValueKind.Object } value)
+        {
+            return fallback;
+        }
+
+        return value.TryGetProperty(name, out var property) && property.TryGetInt32(out var result)
+            ? Math.Clamp(result, 1, 50)
+            : fallback;
+    }
+}

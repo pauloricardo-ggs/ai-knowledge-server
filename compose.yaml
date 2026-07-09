@@ -1,0 +1,107 @@
+name: ai-knowledge-server
+
+services:
+  api:
+    build:
+      context: .
+      dockerfile: docker/api/Dockerfile
+    environment:
+      ASPNETCORE_ENVIRONMENT: ${ASPNETCORE_ENVIRONMENT:-Production}
+      ASPNETCORE_URLS: http://+:8080
+      Workspace__RootPath: /app/workspaces
+      Qdrant__Endpoint: http://qdrant:6333
+      Ollama__Endpoint: http://ollama:11434
+      Models__ChatModel: ${OLLAMA_CHAT_MODEL:-llama3.2:3b}
+      Models__EmbeddingModel: ${OLLAMA_EMBEDDING_MODEL:-nomic-embed-text}
+      Models__AutoPull: ${OLLAMA_AUTO_PULL:-true}
+      Postgres__ConnectionString: Host=postgres;Port=5432;Database=${POSTGRES_DB:-knowledge};Username=${POSTGRES_USER:-knowledge};Password=${POSTGRES_PASSWORD:-knowledge}
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./workspaces:/app/workspaces
+    depends_on:
+      - postgres
+      - qdrant
+      - ollama
+    restart: unless-stopped
+
+  workspace-watcher:
+    build:
+      context: .
+      dockerfile: docker/worker/Dockerfile
+    environment:
+      DOTNET_ENVIRONMENT: ${ASPNETCORE_ENVIRONMENT:-Production}
+      Workspace__RootPath: /app/workspaces
+      Qdrant__Endpoint: http://qdrant:6333
+      Ollama__Endpoint: http://ollama:11434
+      Models__ChatModel: ${OLLAMA_CHAT_MODEL:-llama3.2:3b}
+      Models__EmbeddingModel: ${OLLAMA_EMBEDDING_MODEL:-nomic-embed-text}
+      Models__AutoPull: ${OLLAMA_AUTO_PULL:-true}
+    volumes:
+      - ./workspaces:/app/workspaces
+      - ./.nuget:/home/app/.nuget/packages
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:17.10-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-knowledge}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-knowledge}
+      POSTGRES_DB: ${POSTGRES_DB:-knowledge}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    restart: unless-stopped
+
+  qdrant:
+    image: qdrant/qdrant:v1.18.2
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - qdrant-data:/qdrant/storage
+    restart: unless-stopped
+
+  ollama:
+    image: ollama/ollama:0.31.2
+    environment:
+      OLLAMA_HOST: ${OLLAMA_HOST:-0.0.0.0:11434}
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama-data:/root/.ollama
+    restart: unless-stopped
+    # For NVIDIA GPU on Linux, install NVIDIA Container Toolkit on the host and
+    # uncomment the device reservation below.
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: all
+    #           capabilities: [gpu]
+
+  graphify-runner:
+    profiles: ["tools"]
+    build:
+      context: .
+      dockerfile: docker/graphify-runner/Dockerfile
+    volumes:
+      - ./workspaces:/app/workspaces
+    working_dir: /app/workspaces
+
+  roslyn-indexer:
+    profiles: ["tools"]
+    build:
+      context: .
+      dockerfile: docker/roslyn-indexer/Dockerfile
+    volumes:
+      - ./workspaces:/app/workspaces
+      - ./.nuget:/root/.nuget/packages
+    working_dir: /app/workspaces
+
+volumes:
+  postgres-data:
+  qdrant-data:
+  ollama-data:

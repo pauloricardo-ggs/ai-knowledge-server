@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AI Knowledge Server</title>
+  <link rel="stylesheet" href="/ui/styles.css">
+</head>
+<body>
+  <main class="shell">
+    <aside class="sidebar">
+      <div>
+        <p class="eyebrow">AI Knowledge Server</p>
+        <h1>Knowledge portal</h1>
+      </div>
+
+      <label>
+        Workspace
+        <input id="workspaceId" value="default" autocomplete="off">
+      </label>
+
+      <label>
+        Tool
+        <select id="toolName">
+          <option value="search_business_rules">Search business rules</option>
+          <option value="find_related_code">Find related code</option>
+          <option value="get_service_summary">Get service summary</option>
+          <option value="explain_flow">Explain flow</option>
+          <option value="find_references">Find references</option>
+          <option value="find_impacted_services">Find impacted services</option>
+          <option value="compare_business_rule_with_code">Compare rule with code</option>
+          <option value="find_divergences">Find divergences</option>
+        </select>
+      </label>
+
+      <div class="quick-actions">
+        <button id="refreshWorkspaces" type="button">Refresh</button>
+        <a href="/mcp/info">MCP info</a>
+      </div>
+
+      <section>
+        <h2>Workspaces</h2>
+        <ul id="workspaces" class="list"></ul>
+      </section>
+    </aside>
+
+    <section class="panel">
+      <div class="toolbar">
+        <div>
+          <h2>Ask local knowledge</h2>
+          <p>Calls the HTTP JSON-RPC MCP gateway at <code>/mcp</code>.</p>
+        </div>
+        <button id="initialize" type="button">Initialize</button>
+      </div>
+
+      <label>
+        Query
+        <textarea id="query" rows="5" placeholder="Search for a rule, service, flow, symbol, or possible divergence..."></textarea>
+      </label>
+
+      <div id="compareFields" class="compare-fields hidden">
+        <label>
+          Business rule
+          <textarea id="businessRule" rows="3"></textarea>
+        </label>
+        <label>
+          Code query
+          <textarea id="codeQuery" rows="3"></textarea>
+        </label>
+      </div>
+
+      <div class="actions">
+        <label>
+          Max results
+          <input id="maxResults" type="number" min="1" max="50" value="8">
+        </label>
+        <button id="send" type="button">Run tool</button>
+      </div>
+
+      <article id="response" class="response" aria-live="polite">Ready.</article>
+    </section>
+  </main>
+
+  <script src="/ui/app.js"></script>
+</body>
+</html>
