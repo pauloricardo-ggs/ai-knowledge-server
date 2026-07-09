@@ -36,6 +36,8 @@ app.MapGet("/", () => Results.Ok(new
         "/workspaces/{workspaceId}/chat",
         "/workspaces/{workspaceId}/jobs",
         "/ui",
+        "/v1/models",
+        "/v1/chat/completions",
         "/mcp",
         "/mcp/info"
     }
@@ -152,6 +154,46 @@ app.MapGet("/ui/", (IWebHostEnvironment environment) =>
         Path.Combine(environment.WebRootPath, "ui", "index.html"),
         "text/html"));
 
+app.MapGet("/v1/models", () => Results.Ok(new OpenAiModelsResponse(
+[
+    new OpenAiModel(
+        "knowledge-server",
+        "model",
+        "ai-knowledge-server",
+        DateTimeOffset.UtcNow.ToUnixTimeSeconds())
+])));
+
+app.MapPost("/v1/chat/completions", async (
+    OpenAiChatCompletionRequest request,
+    KnowledgeChatService chatService,
+    CancellationToken cancellationToken) =>
+{
+    if (request.Messages.Count == 0)
+    {
+        return Results.BadRequest(new OpenAiErrorResponse(new OpenAiError(
+            "messages is required.",
+            "invalid_request_error",
+            "messages")));
+    }
+
+    var workspaceId = OpenAiGateway.ResolveWorkspaceId(request);
+    var prompt = OpenAiGateway.BuildPrompt(request.Messages);
+    var maxResults = request.MaxResults is > 0 ? request.MaxResults.Value : 8;
+
+    var response = await chatService.AskAsync(
+        workspaceId,
+        new ChatRequest(prompt, maxResults),
+        cancellationToken);
+
+    var content = OpenAiGateway.FormatAnswer(response);
+    var completion = OpenAiChatCompletionResponse.Create(
+        request.Model,
+        content,
+        prompt);
+
+    return Results.Ok(completion);
+});
+
 app.MapGet("/mcp", () => Results.Ok(new
 {
     message = "MCP endpoint is available. Use POST /mcp with JSON-RPC 2.0.",
@@ -210,6 +252,170 @@ internal sealed record JsonRpcError(
     [property: JsonPropertyName("code")] int Code,
     [property: JsonPropertyName("message")] string Message,
     [property: JsonPropertyName("data")] object? Data = null);
+
+internal sealed record OpenAiModelsResponse(
+    [property: JsonPropertyName("data")] IReadOnlyCollection<OpenAiModel> Data,
+    [property: JsonPropertyName("object")] string Object = "list");
+
+internal sealed record OpenAiModel(
+    [property: JsonPropertyName("id")] string Id,
+    [property: JsonPropertyName("object")] string Object,
+    [property: JsonPropertyName("owned_by")] string OwnedBy,
+    [property: JsonPropertyName("created")] long Created);
+
+internal sealed record OpenAiChatCompletionRequest(
+    [property: JsonPropertyName("model")] string Model,
+    [property: JsonPropertyName("messages")] IReadOnlyCollection<OpenAiChatMessage> Messages,
+    [property: JsonPropertyName("stream")] bool Stream = false,
+    [property: JsonPropertyName("workspaceId")] string? WorkspaceId = null,
+    [property: JsonPropertyName("maxResults")] int? MaxResults = null);
+
+internal sealed record OpenAiChatMessage(
+    [property: JsonPropertyName("role")] string Role,
+    [property: JsonPropertyName("content")] JsonElement Content);
+
+internal sealed record OpenAiChatCompletionResponse(
+    [property: JsonPropertyName("id")] string Id,
+    [property: JsonPropertyName("object")] string Object,
+    [property: JsonPropertyName("created")] long Created,
+    [property: JsonPropertyName("model")] string Model,
+    [property: JsonPropertyName("choices")] IReadOnlyCollection<OpenAiChoice> Choices,
+    [property: JsonPropertyName("usage")] OpenAiUsage Usage)
+{
+    public static OpenAiChatCompletionResponse Create(string model, string answer, string prompt)
+    {
+        return new OpenAiChatCompletionResponse(
+            $"chatcmpl-{Guid.NewGuid():N}",
+            "chat.completion",
+            DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
+            string.IsNullOrWhiteSpace(model) ? "knowledge-server" : model,
+            [
+                new OpenAiChoice(
+                    0,
+                    new OpenAiAssistantMessage("assistant", answer),
+                    "stop")
+            ],
+            new OpenAiUsage(
+                EstimateTokens(prompt),
+                EstimateTokens(answer),
+                EstimateTokens(prompt) + EstimateTokens(answer)));
+    }
+
+    private static int EstimateTokens(string value)
+    {
+        return Math.Max(1, value.Length / 4);
+    }
+}
+
+internal sealed record OpenAiChoice(
+    [property: JsonPropertyName("index")] int Index,
+    [property: JsonPropertyName("message")] OpenAiAssistantMessage Message,
+    [property: JsonPropertyName("finish_reason")] string FinishReason);
+
+internal sealed record OpenAiAssistantMessage(
+    [property: JsonPropertyName("role")] string Role,
+    [property: JsonPropertyName("content")] string Content);
+
+internal sealed record OpenAiUsage(
+    [property: JsonPropertyName("prompt_tokens")] int PromptTokens,
+    [property: JsonPropertyName("completion_tokens")] int CompletionTokens,
+    [property: JsonPropertyName("total_tokens")] int TotalTokens);
+
+internal sealed record OpenAiErrorResponse(
+    [property: JsonPropertyName("error")] OpenAiError Error);
+
+internal sealed record OpenAiError(
+    [property: JsonPropertyName("message")] string Message,
+    [property: JsonPropertyName("type")] string Type,
+    [property: JsonPropertyName("param")] string? Param = null,
+    [property: JsonPropertyName("code")] string? Code = null);
+
+internal static class OpenAiGateway
+{
+    public static string ResolveWorkspaceId(OpenAiChatCompletionRequest request)
+    {
+        if (!string.IsNullOrWhiteSpace(request.WorkspaceId))
+        {
+            return request.WorkspaceId;
+        }
+
+        const string prefix = "knowledge-server:";
+        if (!string.IsNullOrWhiteSpace(request.Model)
+            && request.Model.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+        {
+            return request.Model[prefix.Length..];
+        }
+
+        return "default";
+    }
+
+    public static string BuildPrompt(IReadOnlyCollection<OpenAiChatMessage> messages)
+    {
+        var builder = new StringBuilder();
+        foreach (var message in messages)
+        {
+            var content = ReadContent(message.Content);
+            if (string.IsNullOrWhiteSpace(content))
+            {
+                continue;
+            }
+
+            builder.AppendLine($"{message.Role}: {content}");
+        }
+
+        return builder.ToString().Trim();
+    }
+
+    public static string FormatAnswer(ChatResponse response)
+    {
+        var builder = new StringBuilder();
+        builder.AppendLine(response.Answer.Trim());
+
+        if (response.References.Count > 0)
+        {
+            builder.AppendLine();
+            builder.AppendLine("Referências:");
+            foreach (var reference in response.References)
+            {
+                builder.AppendLine($"- {reference.RelativePath}");
+            }
+        }
+
+        return builder.ToString().Trim();
+    }
+
+    private static string ReadContent(JsonElement content)
+    {
+        if (content.ValueKind == JsonValueKind.String)
+        {
+            return content.GetString() ?? "";
+        }
+
+        if (content.ValueKind != JsonValueKind.Array)
+        {
+            return content.ToString();
+        }
+
+        var parts = new List<string>();
+        foreach (var item in content.EnumerateArray())
+        {
+            if (item.ValueKind == JsonValueKind.String)
+            {
+                parts.Add(item.GetString() ?? "");
+                continue;
+            }
+
+            if (item.ValueKind == JsonValueKind.Object
+                && item.TryGetProperty("text", out var text)
+                && text.ValueKind == JsonValueKind.String)
+            {
+                parts.Add(text.GetString() ?? "");
+            }
+        }
+
+        return string.Join(Environment.NewLine, parts.Where(part => !string.IsNullOrWhiteSpace(part)));
+    }
+}
 
 internal static class McpGateway
 {

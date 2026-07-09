@@ -42,6 +42,23 @@ services:
       - ./.nuget:/home/app/.nuget/packages
     restart: unless-stopped
 
+  open-webui:
+    image: ghcr.io/open-webui/open-webui:v0.10.1
+    environment:
+      OPENAI_API_BASE_URL: http://api:8080/v1
+      OPENAI_API_KEY: ${OPENWEBUI_OPENAI_API_KEY:-local-dev-key}
+      OLLAMA_BASE_URL: http://ollama:11434
+      WEBUI_AUTH: ${OPENWEBUI_AUTH:-true}
+      WEBUI_SECRET_KEY: ${OPENWEBUI_SECRET_KEY:-change-me-in-production}
+    ports:
+      - "3000:8080"
+    volumes:
+      - open-webui-data:/app/backend/data
+    depends_on:
+      - api
+      - ollama
+    restart: unless-stopped
+
   postgres:
     image: postgres:17.10-alpine
     environment:
@@ -105,3 +122,4 @@ volumes:
   postgres-data:
   qdrant-data:
   ollama-data:
+  open-webui-data:

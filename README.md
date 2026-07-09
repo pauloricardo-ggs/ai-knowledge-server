@@ -12,6 +12,8 @@ Este repositório contém um MVP funcional:
 - Upload e listagem de documentos
 - UI web privada em `/ui`
 - Gateway MCP HTTP JSON-RPC em `/mcp`
+- API compatível com OpenAI em `/v1`
+- Open WebUI no Compose para chat humano pronto
 - Endpoint de chat com RAG via Qdrant e geração local via Ollama
 - Pull automático dos modelos configurados no Ollama
 - Indexação de chunks e embeddings
@@ -53,10 +55,22 @@ API:
 http://localhost:8080
 ```
 
-UI:
+Open WebUI:
+
+```text
+http://localhost:3000
+```
+
+UI técnica simples embutida:
 
 ```text
 http://localhost:8080/ui
+```
+
+OpenAI-compatible API:
+
+```text
+http://localhost:8080/v1
 ```
 
 MCP HTTP JSON-RPC:
@@ -71,6 +85,7 @@ Serviços auxiliares:
 PostgreSQL: localhost:5432
 Qdrant:     http://localhost:6333
 Ollama:     http://localhost:11434
+Open WebUI: http://localhost:3000
 ```
 
 ## Workspaces
@@ -124,6 +139,50 @@ O endpoint de chat usa busca vetorial no Qdrant e geração local via Ollama. Se
 curl -X POST http://localhost:8080/workspaces/projeto/chat \
   -H "Content-Type: application/json" \
   -d '{"message":"Quais regras existem para cancelamento?","maxResults":5}'
+```
+
+## Open WebUI
+
+O Compose sobe o Open WebUI pronto para conversar com o AI Knowledge Server usando API compatível com OpenAI.
+
+Abra:
+
+```text
+http://localhost:3000
+```
+
+O modelo exposto pelo servidor é:
+
+```text
+knowledge-server
+```
+
+Por padrão, chamadas feitas pelo Open WebUI usam o workspace `default`. Para usar um workspace específico via API compatível com OpenAI, use o modelo no formato:
+
+```text
+knowledge-server:<workspace-id>
+```
+
+ou envie o campo extra `workspaceId`:
+
+```json
+{
+  "model": "knowledge-server",
+  "workspaceId": "projeto",
+  "messages": [
+    {
+      "role": "user",
+      "content": "Quais regras existem para cancelamento?"
+    }
+  ]
+}
+```
+
+Endpoints compatíveis:
+
+```text
+GET  /v1/models
+POST /v1/chat/completions
 ```
 
 ## Watcher

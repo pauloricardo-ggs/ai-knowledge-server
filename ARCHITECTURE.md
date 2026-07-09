@@ -44,7 +44,8 @@ Esse conhecimento é exposto por duas superfícies:
 
 ```text
 Usuários humanos
-├── Business Chat UI
+├── Open WebUI
+├── Business Chat UI técnico
 ├── Developer Portal
 └── Admin Console
         │
@@ -193,7 +194,7 @@ O Knowledge API e o MCP Gateway combinam os três quando a pergunta envolve cód
 
 ### Business Chat UI
 
-Interface para áreas de negócio consultarem a IA local do servidor.
+Interface para áreas de negócio consultarem a IA local do servidor. No MVP, a interface principal é o Open WebUI apontando para a API OpenAI-compatible do AI Knowledge Server.
 
 Responsabilidades:
 
@@ -297,6 +298,7 @@ Responsável por:
 - Enfileirar reindexações
 - Retornar respostas com referências
 - Padronizar acesso aos providers
+- Expor `/v1/models` e `/v1/chat/completions` para UIs compatíveis com OpenAI, como Open WebUI
 
 ### Workspace Provider
 
@@ -548,6 +550,8 @@ Implementado:
 - Upload de documentos
 - Listagem de workspaces, documentos e jobs
 - UI web privada em `/ui`
+- Open WebUI no Compose em `:3000`
+- API OpenAI-compatible em `/v1`
 - MCP Gateway HTTP JSON-RPC em `/mcp`
 - Chat endpoint com RAG via Qdrant e geração local via Ollama
 - Pull automático de modelos configurados do Ollama
