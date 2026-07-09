@@ -19,6 +19,18 @@ public interface IWorkspaceStore
         string workspaceId,
         CancellationToken cancellationToken);
 
+    Task<WorkspaceRepository> RegisterRepositoryAsync(
+        string workspaceId,
+        string name,
+        string relativePath,
+        string? remoteUrl,
+        string? branch,
+        CancellationToken cancellationToken);
+
+    Task<IReadOnlyCollection<WorkspaceRepository>> ListRepositoriesAsync(
+        string workspaceId,
+        CancellationToken cancellationToken);
+
     Task<IReadOnlyCollection<SearchResult>> SearchAsync(
         string workspaceId,
         string query,

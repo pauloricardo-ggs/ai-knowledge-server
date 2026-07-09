@@ -163,6 +163,12 @@ Por padrão, chamadas feitas pelo Open WebUI usam o workspace `default`. Para us
 knowledge-server:<workspace-id>
 ```
 
+O endpoint `GET /v1/models` lista dinamicamente os workspaces existentes como modelos. Depois de criar `workspaces/projeto`, o Open WebUI passa a ver:
+
+```text
+knowledge-server:projeto
+```
+
 ou envie o campo extra `workspaceId`:
 
 ```json
@@ -183,6 +189,32 @@ Endpoints compatíveis:
 ```text
 GET  /v1/models
 POST /v1/chat/completions
+```
+
+## Admin técnico
+
+A UI embutida em `http://localhost:8080/ui` permite:
+
+- criar workspace
+- registrar repositório já clonado no servidor
+- fazer upload de documentos
+- disparar reindexação
+- listar documentos e repositórios
+- testar ferramentas MCP
+
+Registrar repositório não executa `git clone`. Ele cria/registra o caminho esperado dentro de `workspaces/<workspace>/repositories/` para que o clone ou `git pull` continue sendo feito por automação externa, como GitHub Actions.
+
+Via API:
+
+```bash
+curl -X POST http://localhost:8080/workspaces/projeto/repositories \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "backend-api",
+    "relativePath": "repositories/backend-api",
+    "remoteUrl": "git@github.com:empresa/backend-api.git",
+    "branch": "main"
+  }'
 ```
 
 ## Watcher

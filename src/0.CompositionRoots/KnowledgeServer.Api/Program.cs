@@ -33,6 +33,7 @@ app.MapGet("/", () => Results.Ok(new
         "/health",
         "/workspaces",
         "/workspaces/{workspaceId}/documents",
+        "/workspaces/{workspaceId}/repositories",
         "/workspaces/{workspaceId}/chat",
         "/workspaces/{workspaceId}/jobs",
         "/ui",
@@ -73,6 +74,37 @@ app.MapGet("/workspaces/{workspaceId}/documents", async (
 {
     var documents = await workspaceStore.ListDocumentsAsync(workspaceId, cancellationToken);
     return Results.Ok(documents);
+});
+
+app.MapGet("/workspaces/{workspaceId}/repositories", async (
+    string workspaceId,
+    IWorkspaceStore workspaceStore,
+    CancellationToken cancellationToken) =>
+{
+    var repositories = await workspaceStore.ListRepositoriesAsync(workspaceId, cancellationToken);
+    return Results.Ok(repositories);
+});
+
+app.MapPost("/workspaces/{workspaceId}/repositories", async (
+    string workspaceId,
+    RegisterRepositoryRequest request,
+    IWorkspaceStore workspaceStore,
+    CancellationToken cancellationToken) =>
+{
+    if (string.IsNullOrWhiteSpace(request.Name))
+    {
+        return Results.BadRequest(new { message = "Repository name is required." });
+    }
+
+    var repository = await workspaceStore.RegisterRepositoryAsync(
+        workspaceId,
+        request.Name,
+        request.RelativePath ?? Path.Combine("repositories", request.Name),
+        request.RemoteUrl,
+        request.Branch,
+        cancellationToken);
+
+    return Results.Created($"/workspaces/{workspaceId}/repositories/{repository.Name}", repository);
 });
 
 app.MapPost("/workspaces/{workspaceId}/documents", async (
@@ -147,21 +179,30 @@ app.MapGet("/workspaces/{workspaceId}/graphify", (string workspaceId, IConfigura
 
 app.MapGet("/ui", (IWebHostEnvironment environment) =>
     Results.File(
-        Path.Combine(environment.WebRootPath, "ui", "index.html"),
-        "text/html"));
-app.MapGet("/ui/", (IWebHostEnvironment environment) =>
-    Results.File(
-        Path.Combine(environment.WebRootPath, "ui", "index.html"),
+        Path.Combine(environment.WebRootPath ?? Path.Combine(environment.ContentRootPath, "wwwroot"), "ui", "index.html"),
         "text/html"));
 
-app.MapGet("/v1/models", () => Results.Ok(new OpenAiModelsResponse(
-[
-    new OpenAiModel(
-        "knowledge-server",
-        "model",
-        "ai-knowledge-server",
-        DateTimeOffset.UtcNow.ToUnixTimeSeconds())
-])));
+app.MapGet("/v1/models", async (
+    IWorkspaceStore workspaceStore,
+    CancellationToken cancellationToken) =>
+{
+    var created = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+    var workspaces = await workspaceStore.ListWorkspacesAsync(cancellationToken);
+    var models = new List<OpenAiModel>
+    {
+        new("knowledge-server", "model", "ai-knowledge-server", created)
+    };
+
+    models.AddRange(workspaces
+        .OrderBy(workspace => workspace.Id, StringComparer.OrdinalIgnoreCase)
+        .Select(workspace => new OpenAiModel(
+            $"knowledge-server:{workspace.Id}",
+            "model",
+            "ai-knowledge-server",
+            created)));
+
+    return Results.Ok(new OpenAiModelsResponse(models));
+});
 
 app.MapPost("/v1/chat/completions", async (
     OpenAiChatCompletionRequest request,
@@ -235,6 +276,12 @@ app.MapGet("/mcp/info", () => Results.Ok(new
 }));
 
 app.Run();
+
+internal sealed record RegisterRepositoryRequest(
+    string Name,
+    string? RelativePath = null,
+    string? RemoteUrl = null,
+    string? Branch = null);
 
 internal sealed record JsonRpcRequest(
     [property: JsonPropertyName("jsonrpc")] string? JsonRpc,

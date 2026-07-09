@@ -44,7 +44,68 @@
       </section>
     </aside>
 
-    <section class="panel">
+    <section class="panel admin-panel">
+      <div class="toolbar">
+        <div>
+          <h2>Admin</h2>
+          <p>Create workspaces, register repositories, upload documents, and trigger reindexing.</p>
+        </div>
+      </div>
+
+      <div class="admin-grid">
+        <label>
+          New workspace
+          <input id="newWorkspaceId" placeholder="project-a" autocomplete="off">
+        </label>
+        <button id="createWorkspace" type="button">Create workspace</button>
+      </div>
+
+      <div class="admin-grid">
+        <label>
+          Repository name
+          <input id="repositoryName" placeholder="backend-api" autocomplete="off">
+        </label>
+        <label>
+          Relative path
+          <input id="repositoryPath" placeholder="repositories/backend-api" autocomplete="off">
+        </label>
+        <label>
+          Remote URL
+          <input id="repositoryRemote" placeholder="git@github.com:org/repo.git" autocomplete="off">
+        </label>
+        <label>
+          Branch
+          <input id="repositoryBranch" placeholder="main" autocomplete="off">
+        </label>
+        <button id="registerRepository" type="button">Register repository</button>
+      </div>
+
+      <div class="admin-grid">
+        <label>
+          Document category
+          <input id="documentCategory" value="raw" autocomplete="off">
+        </label>
+        <label>
+          Document file
+          <input id="documentFile" type="file">
+        </label>
+        <button id="uploadDocument" type="button">Upload document</button>
+        <button id="reindexWorkspace" type="button">Reindex workspace</button>
+      </div>
+
+      <div class="admin-columns">
+        <section>
+          <h2>Repositories</h2>
+          <ul id="repositories" class="list"></ul>
+        </section>
+        <section>
+          <h2>Documents</h2>
+          <ul id="documents" class="list"></ul>
+        </section>
+      </div>
+    </section>
+
+    <section class="panel chat-panel">
       <div class="toolbar">
         <div>
           <h2>Ask local knowledge</h2>

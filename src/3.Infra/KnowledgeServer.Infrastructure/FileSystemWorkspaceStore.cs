@@ -103,6 +103,103 @@ public sealed class FileSystemWorkspaceStore(IOptions<WorkspaceOptions> options)
             .ToArray();
     }
 
+    public async Task<WorkspaceRepository> RegisterRepositoryAsync(
+        string workspaceId,
+        string name,
+        string relativePath,
+        string? remoteUrl,
+        string? branch,
+        CancellationToken cancellationToken)
+    {
+        var workspace = await GetOrCreateWorkspaceAsync(workspaceId, cancellationToken);
+        var safeName = NormalizeSegment(name);
+        var safeRelativePath = NormalizeRepositoryPath(string.IsNullOrWhiteSpace(relativePath)
+            ? Path.Combine("repositories", safeName)
+            : relativePath);
+
+        if (!safeRelativePath.StartsWith("repositories/", StringComparison.Ordinal)
+            && safeRelativePath != "repositories")
+        {
+            safeRelativePath = $"repositories/{safeRelativePath}";
+        }
+
+        var absoluteRepositoryPath = Path.GetFullPath(Path.Combine(workspace.RootPath, safeRelativePath));
+        if (!absoluteRepositoryPath.StartsWith(workspace.RootPath, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException("Repository path must stay inside the workspace.");
+        }
+
+        Directory.CreateDirectory(absoluteRepositoryPath);
+
+        var repository = new WorkspaceRepository(
+            workspace.Id,
+            safeName,
+            safeRelativePath,
+            string.IsNullOrWhiteSpace(remoteUrl) ? null : remoteUrl,
+            string.IsNullOrWhiteSpace(branch) ? null : branch,
+            TryReadGitCommit(absoluteRepositoryPath),
+            DateTimeOffset.UtcNow);
+
+        var repositories = (await ListRepositoriesAsync(workspace.Id, cancellationToken))
+            .Where(existing => !existing.Name.Equals(repository.Name, StringComparison.OrdinalIgnoreCase))
+            .Append(repository)
+            .OrderBy(item => item.Name, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
+        await WriteRepositoriesAsync(workspace.RootPath, repositories, cancellationToken);
+
+        await EnqueueIndexingJobAsync(
+            workspace.Id,
+            "repository-registered",
+            absoluteRepositoryPath,
+            cancellationToken);
+
+        return repository;
+    }
+
+    public async Task<IReadOnlyCollection<WorkspaceRepository>> ListRepositoriesAsync(
+        string workspaceId,
+        CancellationToken cancellationToken)
+    {
+        var workspace = await GetOrCreateWorkspaceAsync(workspaceId, cancellationToken);
+        var metadataPath = RepositoriesMetadataPath(workspace.RootPath);
+        var registered = new List<WorkspaceRepository>();
+
+        if (File.Exists(metadataPath))
+        {
+            var json = await File.ReadAllTextAsync(metadataPath, cancellationToken);
+            registered.AddRange(JsonSerializer.Deserialize<WorkspaceRepository[]>(json, JsonOptions) ?? []);
+        }
+
+        var repositoriesRoot = Path.Combine(workspace.RootPath, "repositories");
+        if (Directory.Exists(repositoriesRoot))
+        {
+            foreach (var directory in Directory.EnumerateDirectories(repositoriesRoot))
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+
+                var relativePath = Path.GetRelativePath(workspace.RootPath, directory);
+                if (registered.Any(item => item.RelativePath.Equals(relativePath, StringComparison.OrdinalIgnoreCase)))
+                {
+                    continue;
+                }
+
+                registered.Add(new WorkspaceRepository(
+                    workspace.Id,
+                    Path.GetFileName(directory),
+                    relativePath,
+                    TryReadGitRemote(directory),
+                    TryReadGitBranch(directory),
+                    TryReadGitCommit(directory),
+                    Directory.GetCreationTimeUtc(directory)));
+            }
+        }
+
+        return registered
+            .OrderBy(repository => repository.Name, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+    }
+
     public async Task<IReadOnlyCollection<SearchResult>> SearchAsync(
         string workspaceId,
         string query,
@@ -320,6 +417,25 @@ public sealed class FileSystemWorkspaceStore(IOptions<WorkspaceOptions> options)
         Directory.CreateDirectory(Path.Combine(workspacePath, "logs"));
     }
 
+    private static string RepositoriesMetadataPath(string workspaceRoot)
+    {
+        return Path.Combine(workspaceRoot, "repositories", "repositories.json");
+    }
+
+    private static async Task WriteRepositoriesAsync(
+        string workspaceRoot,
+        IReadOnlyCollection<WorkspaceRepository> repositories,
+        CancellationToken cancellationToken)
+    {
+        var path = RepositoriesMetadataPath(workspaceRoot);
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        await File.WriteAllTextAsync(
+            path,
+            JsonSerializer.Serialize(repositories, JsonOptions),
+            Encoding.UTF8,
+            cancellationToken);
+    }
+
     private static WorkspaceDocument ToDocument(string workspaceId, string workspaceRoot, string path)
     {
         var info = new FileInfo(path);
@@ -424,6 +540,70 @@ public sealed class FileSystemWorkspaceStore(IOptions<WorkspaceOptions> options)
     {
         var fileName = Path.GetFileName(value);
         return NormalizeSegment(fileName);
+    }
+
+    private static string NormalizeRepositoryPath(string value)
+    {
+        var normalized = value.Replace('\\', '/').Trim('/', ' ');
+        var segments = normalized
+            .Split('/', StringSplitOptions.RemoveEmptyEntries)
+            .Where(segment => segment != "." && segment != "..")
+            .Select(NormalizeSegment);
+
+        return string.Join('/', segments);
+    }
+
+    private static string? TryReadGitRemote(string repositoryPath)
+    {
+        var configPath = Path.Combine(repositoryPath, ".git", "config");
+        if (!File.Exists(configPath))
+        {
+            return null;
+        }
+
+        var lines = File.ReadAllLines(configPath);
+        return lines
+            .Select(line => line.Trim())
+            .FirstOrDefault(line => line.StartsWith("url =", StringComparison.OrdinalIgnoreCase))
+            ?.Split('=', 2)[1]
+            .Trim();
+    }
+
+    private static string? TryReadGitBranch(string repositoryPath)
+    {
+        var headPath = Path.Combine(repositoryPath, ".git", "HEAD");
+        if (!File.Exists(headPath))
+        {
+            return null;
+        }
+
+        var head = File.ReadAllText(headPath).Trim();
+        const string prefix = "ref: refs/heads/";
+        return head.StartsWith(prefix, StringComparison.Ordinal)
+            ? head[prefix.Length..]
+            : null;
+    }
+
+    private static string? TryReadGitCommit(string repositoryPath)
+    {
+        var gitRoot = Path.Combine(repositoryPath, ".git");
+        var headPath = Path.Combine(gitRoot, "HEAD");
+        if (!File.Exists(headPath))
+        {
+            return null;
+        }
+
+        var head = File.ReadAllText(headPath).Trim();
+        const string prefix = "ref: ";
+        if (!head.StartsWith(prefix, StringComparison.Ordinal))
+        {
+            return head.Length >= 7 ? head : null;
+        }
+
+        var refPath = Path.Combine(gitRoot, head[prefix.Length..].Replace('/', Path.DirectorySeparatorChar));
+        return File.Exists(refPath)
+            ? File.ReadAllText(refPath).Trim()
+            : null;
     }
 
     private static string ToRelativeOrOriginal(string workspaceRoot, string sourcePath)

@@ -25,7 +25,16 @@ const elements = {
   maxResults: document.querySelector("#maxResults"),
   response: document.querySelector("#response"),
   workspaces: document.querySelector("#workspaces"),
-  compareFields: document.querySelector("#compareFields")
+  repositories: document.querySelector("#repositories"),
+  documents: document.querySelector("#documents"),
+  compareFields: document.querySelector("#compareFields"),
+  newWorkspaceId: document.querySelector("#newWorkspaceId"),
+  repositoryName: document.querySelector("#repositoryName"),
+  repositoryPath: document.querySelector("#repositoryPath"),
+  repositoryRemote: document.querySelector("#repositoryRemote"),
+  repositoryBranch: document.querySelector("#repositoryBranch"),
+  documentCategory: document.querySelector("#documentCategory"),
+  documentFile: document.querySelector("#documentFile")
 };
 
 const setResponse = value => {
@@ -51,9 +60,42 @@ const refreshWorkspaces = async () => {
     button.textContent = workspace.id;
     button.addEventListener("click", () => {
       elements.workspaceId.value = workspace.id;
+      refreshWorkspaceDetails().catch(error => setResponse(error.message));
     });
     item.append(button);
     elements.workspaces.append(item);
+  }
+};
+
+const refreshWorkspaceDetails = async () => {
+  const workspaceId = elements.workspaceId.value.trim() || "default";
+  const [repositoriesResponse, documentsResponse] = await Promise.all([
+    fetch(`/workspaces/${encodeURIComponent(workspaceId)}/repositories`),
+    fetch(`/workspaces/${encodeURIComponent(workspaceId)}/documents`)
+  ]);
+
+  const repositories = await repositoriesResponse.json();
+  const documents = await documentsResponse.json();
+
+  renderList(elements.repositories, repositories, repository =>
+    `${repository.name} · ${repository.relativePath}${repository.branch ? ` · ${repository.branch}` : ""}`);
+  renderList(elements.documents, documents, document =>
+    `${document.relativePath} · ${Math.round(document.sizeBytes / 1024)} KB`);
+};
+
+const renderList = (target, items, label) => {
+  target.replaceChildren();
+  if (!Array.isArray(items) || items.length === 0) {
+    const item = document.createElement("li");
+    item.textContent = "None.";
+    target.append(item);
+    return;
+  }
+
+  for (const value of items) {
+    const item = document.createElement("li");
+    item.textContent = label(value);
+    target.append(item);
   }
 };
 
@@ -98,7 +140,81 @@ document.querySelector("#send").addEventListener("click", async () => {
 });
 
 document.querySelector("#refreshWorkspaces").addEventListener("click", () => {
-  refreshWorkspaces().catch(error => setResponse(error.message));
+  Promise.all([refreshWorkspaces(), refreshWorkspaceDetails()])
+    .catch(error => setResponse(error.message));
+});
+
+document.querySelector("#createWorkspace").addEventListener("click", async () => {
+  const workspaceId = elements.newWorkspaceId.value.trim();
+  if (!workspaceId) {
+    setResponse("Workspace id is required.");
+    return;
+  }
+
+  const response = await fetch(`/workspaces/${encodeURIComponent(workspaceId)}`, {
+    method: "POST"
+  });
+  const payload = await response.json();
+  elements.workspaceId.value = payload.id;
+  setResponse(payload);
+  await refreshWorkspaces();
+  await refreshWorkspaceDetails();
+});
+
+document.querySelector("#registerRepository").addEventListener("click", async () => {
+  const workspaceId = elements.workspaceId.value.trim() || "default";
+  const name = elements.repositoryName.value.trim();
+  if (!name) {
+    setResponse("Repository name is required.");
+    return;
+  }
+
+  const response = await fetch(`/workspaces/${encodeURIComponent(workspaceId)}/repositories`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      name,
+      relativePath: elements.repositoryPath.value.trim() || undefined,
+      remoteUrl: elements.repositoryRemote.value.trim() || undefined,
+      branch: elements.repositoryBranch.value.trim() || undefined
+    })
+  });
+  const payload = await response.json();
+  setResponse(payload);
+  await refreshWorkspaceDetails();
+});
+
+document.querySelector("#uploadDocument").addEventListener("click", async () => {
+  const workspaceId = elements.workspaceId.value.trim() || "default";
+  const file = elements.documentFile.files[0];
+  if (!file) {
+    setResponse("Choose a document file first.");
+    return;
+  }
+
+  const form = new FormData();
+  form.append("file", file);
+
+  const category = elements.documentCategory.value.trim() || "raw";
+  const response = await fetch(
+    `/workspaces/${encodeURIComponent(workspaceId)}/documents?category=${encodeURIComponent(category)}`,
+    {
+      method: "POST",
+      body: form
+    });
+
+  const payload = await response.json();
+  setResponse(payload);
+  await refreshWorkspaceDetails();
+});
+
+document.querySelector("#reindexWorkspace").addEventListener("click", async () => {
+  const workspaceId = elements.workspaceId.value.trim() || "default";
+  const response = await fetch(`/workspaces/${encodeURIComponent(workspaceId)}/jobs/reindex`, {
+    method: "POST"
+  });
+  const payload = await response.json();
+  setResponse(payload);
 });
 
 elements.toolName.addEventListener("change", () => {
@@ -108,4 +224,9 @@ elements.toolName.addEventListener("change", () => {
   );
 });
 
-refreshWorkspaces().catch(error => setResponse(error.message));
+elements.workspaceId.addEventListener("change", () => {
+  refreshWorkspaceDetails().catch(error => setResponse(error.message));
+});
+
+Promise.all([refreshWorkspaces(), refreshWorkspaceDetails()])
+  .catch(error => setResponse(error.message));
