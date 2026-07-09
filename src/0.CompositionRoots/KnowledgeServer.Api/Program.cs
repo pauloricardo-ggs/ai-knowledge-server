@@ -143,8 +143,36 @@ app.MapGet("/workspaces/{workspaceId}/graphify", (string workspaceId, IConfigura
     return result;
 });
 
-app.MapGet("/ui", () => Results.Redirect("/ui/index.html"));
-app.MapGet("/ui/", () => Results.Redirect("/ui/index.html"));
+app.MapGet("/ui", (IWebHostEnvironment environment) =>
+    Results.File(
+        Path.Combine(environment.WebRootPath, "ui", "index.html"),
+        "text/html"));
+app.MapGet("/ui/", (IWebHostEnvironment environment) =>
+    Results.File(
+        Path.Combine(environment.WebRootPath, "ui", "index.html"),
+        "text/html"));
+
+app.MapGet("/mcp", () => Results.Ok(new
+{
+    message = "MCP endpoint is available. Use POST /mcp with JSON-RPC 2.0.",
+    examples = new
+    {
+        initialize = new
+        {
+            jsonrpc = "2.0",
+            id = 1,
+            method = "initialize",
+            @params = new { }
+        },
+        listTools = new
+        {
+            jsonrpc = "2.0",
+            id = 2,
+            method = "tools/list",
+            @params = new { }
+        }
+    }
+}));
 
 app.MapPost("/mcp", async (
     JsonRpcRequest request,
