@@ -60,6 +60,10 @@ const elements = {
   jobsNextPage: document.querySelector("#jobsNextPage"),
   runningIndexingBadge: document.querySelector("#runningIndexingBadge"),
   runningIndexingList: document.querySelector("#runningIndexingList"),
+  jobLogsBadge: document.querySelector("#jobLogsBadge"),
+  jobLogsSelector: document.querySelector("#jobLogsSelector"),
+  jobLogsSummary: document.querySelector("#jobLogsSummary"),
+  jobLogsList: document.querySelector("#jobLogsList"),
   viewTabs: Array.from(document.querySelectorAll(".view-tab")),
   viewPanels: Array.from(document.querySelectorAll(".view-panel")),
   includeHiddenEntries: document.querySelector("#includeHiddenEntries"),
@@ -77,7 +81,16 @@ const elements = {
   graphifyStatusBadge: document.querySelector("#graphifyStatusBadge"),
   graphifyStatusText: document.querySelector("#graphifyStatusText"),
   graphifyEmptyState: document.querySelector("#graphifyEmptyState"),
-  graphifyFrame: document.querySelector("#graphifyFrame")
+  graphifyFrame: document.querySelector("#graphifyFrame"),
+  graphifySourceSelector: document.querySelector("#graphifySourceSelector"),
+  graphifyGenerator: document.querySelector("#graphifyGenerator"),
+  graphifyCounts: document.querySelector("#graphifyCounts"),
+  graphifyCommand: document.querySelector("#graphifyCommand"),
+  graphifyArguments: document.querySelector("#graphifyArguments"),
+  graphifyProcessMeta: document.querySelector("#graphifyProcessMeta"),
+  graphifyProcessError: document.querySelector("#graphifyProcessError"),
+  graphifyStderr: document.querySelector("#graphifyStderr"),
+  graphifyStdout: document.querySelector("#graphifyStdout")
 };
 
 const state = {
@@ -89,9 +102,11 @@ const state = {
   explorer: null,
   preview: null,
   graphify: null,
+  graphifySelectedPath: null,
   includeHiddenEntries: false,
   explorerPath: "",
-  jobPage: 1
+  jobPage: 1,
+  selectedJobId: null
 };
 
 let jobsPollingHandle = null;
@@ -139,6 +154,11 @@ const stageLabel = stage => ({
   completed: "Concluído",
   failed: "Falhou"
 }[stage] ?? stage ?? "-");
+
+const graphifyAssetUrl = relativePath => {
+  const workspaceId = elements.workspaceId.value.trim() || "default";
+  return `/workspaces/${encodeURIComponent(workspaceId)}/assets/${relativePath}`;
+};
 
 const escapeHtml = value => value
   .replaceAll("&", "&amp;")
@@ -370,6 +390,14 @@ const renderJobs = () => {
       <td>${formatDateTime(job.createdAt)}</td>
       <td>${job.error ? escapeHtml(job.error) : "-"}</td>
     `;
+    row.style.cursor = "pointer";
+    row.addEventListener("click", () => {
+      state.selectedJobId = job.id;
+      switchView("jobs");
+      renderJobLogs();
+      elements.jobLogsSelector.value = job.id;
+      elements.jobLogsSelector.scrollIntoView({ behavior: "smooth", block: "center" });
+    });
     elements.jobsTableBody.append(row);
   }
 
@@ -380,27 +408,94 @@ const renderJobs = () => {
 
   elements.runningIndexingBadge.textContent = String(runningJobs.length);
   if (runningJobs.length === 0) {
-    renderEmptyState(elements.runningIndexingList, "Nenhuma indexação em andamento.");
+    const latestJob = state.jobs[0];
+    renderEmptyState(
+      elements.runningIndexingList,
+      latestJob
+        ? `Nenhuma indexação em andamento. Último job: ${latestJob.reason} em ${formatDateTime(latestJob.createdAt)}.`
+        : "Nenhuma indexação em andamento.");
+  } else {
+    elements.runningIndexingList.innerHTML = runningJobs.map(job => {
+      const percent = progressPercent(job.progress);
+      const pendingPaths = job.progress?.pendingPaths ?? [];
+      return `
+        <article>
+          <div class="section-heading compact">
+            <span class="status-pill ${job.status}">${job.status}</span>
+            <span class="muted-text">${stageLabel(job.progress?.stage)}</span>
+          </div>
+          <strong>${escapeHtml(job.progress?.message ?? job.reason)}</strong>
+          <span class="mono-inline">${escapeHtml(job.progress?.currentPath ?? job.sourcePath)}</span>
+          ${percent !== null ? `<div class="progress-bar"><span style="width:${percent}%"></span></div>` : ""}
+          <span class="muted-text">${job.progress?.processedItems ?? 0}${Number.isFinite(job.progress?.totalItems) ? ` de ${job.progress.totalItems}` : ""}</span>
+          ${pendingPaths.length > 0 ? `<span class="muted-text">Próximos: ${escapeHtml(pendingPaths.join(", "))}</span>` : ""}
+        </article>
+      `;
+    }).join("");
+  }
+
+  renderJobLogs();
+};
+
+const renderJobLogs = () => {
+  const jobsWithLogs = state.jobs.filter(job => Array.isArray(job.logs) && job.logs.length > 0);
+  elements.jobLogsBadge.textContent = String(jobsWithLogs.length);
+
+  elements.jobLogsSelector.replaceChildren();
+  if (jobsWithLogs.length === 0) {
+    const option = document.createElement("option");
+    option.value = "";
+    option.textContent = "Nenhum job com logs";
+    elements.jobLogsSelector.append(option);
+    elements.jobLogsSelector.disabled = true;
+    elements.jobLogsSummary.textContent = "Ainda não há timeline de execução disponível para este workspace.";
+    renderEmptyState(elements.jobLogsList, "Os logs detalhados aparecerão conforme os jobs forem executados.");
     return;
   }
 
-  elements.runningIndexingList.innerHTML = runningJobs.map(job => {
-    const percent = progressPercent(job.progress);
-    const pendingPaths = job.progress?.pendingPaths ?? [];
-    return `
-      <article>
-        <div class="section-heading compact">
-          <span class="status-pill ${job.status}">${job.status}</span>
-          <span class="muted-text">${stageLabel(job.progress?.stage)}</span>
-        </div>
-        <strong>${escapeHtml(job.progress?.message ?? job.reason)}</strong>
-        <span class="mono-inline">${escapeHtml(job.progress?.currentPath ?? job.sourcePath)}</span>
-        ${percent !== null ? `<div class="progress-bar"><span style="width:${percent}%"></span></div>` : ""}
-        <span class="muted-text">${job.progress?.processedItems ?? 0}${Number.isFinite(job.progress?.totalItems) ? ` de ${job.progress.totalItems}` : ""}</span>
-        ${pendingPaths.length > 0 ? `<span class="muted-text">Próximos: ${escapeHtml(pendingPaths.join(", "))}</span>` : ""}
-      </article>
-    `;
-  }).join("");
+  elements.jobLogsSelector.disabled = false;
+  if (!state.selectedJobId || !jobsWithLogs.some(job => job.id === state.selectedJobId)) {
+    state.selectedJobId = jobsWithLogs[0].id;
+  }
+
+  for (const job of jobsWithLogs) {
+    const option = document.createElement("option");
+    option.value = job.id;
+    option.textContent = `${job.reason} · ${formatDateTime(job.createdAt)}`;
+    option.selected = job.id === state.selectedJobId;
+    elements.jobLogsSelector.append(option);
+  }
+
+  const selectedJob = jobsWithLogs.find(job => job.id === state.selectedJobId) ?? jobsWithLogs[0];
+  state.selectedJobId = selectedJob.id;
+  elements.jobLogsSummary.textContent = `${selectedJob.logs.length} evento(s) registrados para ${selectedJob.reason}.`;
+
+  elements.jobLogsList.innerHTML = selectedJob.logs
+    .slice()
+    .reverse()
+    .map(log => {
+      const percent = Number.isFinite(log.totalItems) && log.totalItems > 0 && Number.isFinite(log.processedItems)
+        ? Math.max(0, Math.min(100, Math.round((log.processedItems / log.totalItems) * 100)))
+        : null;
+
+      return `
+        <article class="log-entry">
+          <div class="log-entry-header">
+            <div class="section-heading compact">
+              <span class="log-level ${escapeHtml(log.level)}">${escapeHtml(log.level)}</span>
+              <strong>${escapeHtml(stageLabel(log.stage))}</strong>
+            </div>
+            <span class="muted-text">${formatDateTime(log.timestamp)}</span>
+          </div>
+          <span>${escapeHtml(log.message)}</span>
+          ${log.currentPath ? `<span class="mono-inline">${escapeHtml(log.currentPath)}</span>` : ""}
+          ${percent !== null ? `<div class="progress-bar"><span style="width:${percent}%"></span></div>` : ""}
+          ${Number.isFinite(log.totalItems) ? `<span class="muted-text">${log.processedItems ?? 0} de ${log.totalItems}</span>` : ""}
+          ${Array.isArray(log.pendingPaths) && log.pendingPaths.length > 0 ? `<span class="muted-text">Pendentes: ${escapeHtml(log.pendingPaths.join(", "))}</span>` : ""}
+        </article>
+      `;
+    })
+    .join("");
 };
 
 const refreshExplorer = async (nextPath = state.explorerPath) => {
@@ -504,29 +599,18 @@ const graphifyUrl = workspaceId => `/workspaces/${encodeURIComponent(workspaceId
 
 const refreshGraphify = async () => {
   const workspaceId = elements.workspaceId.value.trim() || "default";
-  const url = graphifyUrl(workspaceId);
-  elements.openGraphifyExternal.href = url;
+  const response = await fetch(`/workspaces/${encodeURIComponent(workspaceId)}/graphify/sources`);
+  state.graphify = await response.json();
 
-  const response = await fetch(url, {
-    headers: {
-      Accept: "text/html,application/json"
-    }
-  });
-
-  if (response.ok) {
-    state.graphify = {
-      available: true,
-      message: "HTML do grafo disponível.",
-      url
-    };
-  } else {
-    const payload = await response.json().catch(() => null);
-    state.graphify = {
-      available: false,
-      message: payload?.message ?? "HTML do grafo ainda não está disponível.",
-      url
-    };
+  const sources = state.graphify.sources ?? [];
+  const preferred = state.graphify.preferredAssetPath;
+  if (!state.graphifySelectedPath || !sources.some(source => source.relativePath === state.graphifySelectedPath)) {
+    state.graphifySelectedPath = preferred ?? sources[0]?.relativePath ?? null;
   }
+
+  elements.openGraphifyExternal.href = state.graphifySelectedPath
+    ? graphifyAssetUrl(state.graphifySelectedPath)
+    : graphifyUrl(workspaceId);
 
   renderGraphify();
 };
@@ -541,19 +625,58 @@ const renderGraphify = () => {
     return;
   }
 
-  if (graphify.available) {
-    elements.graphifyStatusBadge.textContent = "Disponível";
-    elements.graphifyStatusText.textContent = graphify.message;
+  const sources = graphify.sources ?? [];
+  elements.graphifySourceSelector.replaceChildren();
+  if (sources.length === 0) {
+    const option = document.createElement("option");
+    option.value = "";
+    option.textContent = "Nenhuma fonte HTML encontrada";
+    elements.graphifySourceSelector.append(option);
+    elements.graphifySourceSelector.disabled = true;
+  } else {
+    elements.graphifySourceSelector.disabled = false;
+    for (const source of sources) {
+      const option = document.createElement("option");
+      option.value = source.relativePath;
+      option.textContent = `${source.label} · ${source.relativePath}`;
+      option.selected = source.relativePath === state.graphifySelectedPath;
+      elements.graphifySourceSelector.append(option);
+    }
+  }
+
+  elements.graphifyGenerator.textContent = graphify.manifest?.generator ?? "desconhecido";
+  elements.graphifyCounts.textContent = graphify.manifest?.nodeCount || graphify.manifest?.edgeCount
+    ? `${graphify.manifest?.nodeCount ?? 0} nodes · ${graphify.manifest?.edgeCount ?? 0} edges`
+    : "-";
+  elements.graphifyCommand.textContent = graphify.processLog?.command ?? "-";
+  elements.graphifyArguments.textContent = graphify.processLog?.arguments ?? "-";
+  elements.graphifyProcessMeta.textContent = graphify.processLog?.exitCode !== null && graphify.processLog?.exitCode !== undefined
+    ? `exit code ${graphify.processLog.exitCode}${graphify.processLog.startedAt ? ` · iniciado em ${formatDateTime(graphify.processLog.startedAt)}` : ""}${graphify.processLog.finishedAt ? ` · finalizado em ${formatDateTime(graphify.processLog.finishedAt)}` : ""}`
+    : "Sem log de processo.";
+  elements.graphifyProcessError.textContent = graphify.processLog?.error || graphify.processLog?.stderr || graphify.statusMessage || "-";
+  elements.graphifyStderr.textContent = graphify.processLog?.stderr ?? "-";
+  elements.graphifyStdout.textContent = graphify.processLog?.stdout ?? "-";
+
+  if (graphify.hasVisualization && state.graphifySelectedPath) {
+    const selectedSource = sources.find(source => source.relativePath === state.graphifySelectedPath);
+    const isFallback = graphify.manifest?.generator === "fallback-file-graph"
+      && state.graphifySelectedPath.startsWith("graphs/");
+
+    elements.graphifyStatusBadge.textContent = isFallback ? "Fallback" : "Disponível";
+    elements.graphifyStatusText.textContent = selectedSource
+      ? `${graphify.statusMessage} Fonte atual: ${selectedSource.relativePath}.`
+      : graphify.statusMessage;
     elements.graphifyEmptyState.classList.add("hidden");
     elements.graphifyFrame.classList.remove("hidden");
-    if (elements.graphifyFrame.src !== new URL(graphify.url, window.location.origin).toString()) {
-      elements.graphifyFrame.src = graphify.url;
+    const targetUrl = graphifyAssetUrl(state.graphifySelectedPath);
+    if (elements.graphifyFrame.src !== new URL(targetUrl, window.location.origin).toString()) {
+      elements.graphifyFrame.src = targetUrl;
     }
     return;
   }
 
   elements.graphifyStatusBadge.textContent = "Pendente";
-  elements.graphifyStatusText.textContent = graphify.message;
+  elements.graphifyStatusText.textContent = graphify.statusMessage;
   elements.graphifyEmptyState.classList.remove("hidden");
   elements.graphifyFrame.classList.add("hidden");
   elements.graphifyFrame.removeAttribute("src");
@@ -752,6 +875,11 @@ elements.jobsNextPage.addEventListener("click", () => {
   renderJobs();
 });
 
+elements.jobLogsSelector.addEventListener("change", () => {
+  state.selectedJobId = elements.jobLogsSelector.value || null;
+  renderJobLogs();
+});
+
 elements.includeHiddenEntries.addEventListener("change", () => {
   state.includeHiddenEntries = elements.includeHiddenEntries.checked;
   refreshExplorer().catch(error => setResponse(error.message));
@@ -772,6 +900,11 @@ elements.refreshExplorer.addEventListener("click", () => {
 
 elements.refreshGraphify.addEventListener("click", () => {
   refreshGraphify().catch(error => setResponse(error.message));
+});
+
+elements.graphifySourceSelector.addEventListener("change", () => {
+  state.graphifySelectedPath = elements.graphifySourceSelector.value || null;
+  renderGraphify();
 });
 
 switchView("overview");

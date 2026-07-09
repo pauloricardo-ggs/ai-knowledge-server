@@ -8,5 +8,5 @@ public sealed class WorkspaceOptions
 
     public string GraphifyCommand { get; set; } = "graphify";
 
-    public string GraphifyArguments { get; set; } = "\"{RepositoryRoot}\" --output \"{GraphRoot}\"";
+    public string GraphifyArguments { get; set; } = "\"{InputRoot}\" --output \"{GraphRoot}\"";
 }

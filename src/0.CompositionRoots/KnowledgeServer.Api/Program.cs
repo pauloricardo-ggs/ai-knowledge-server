@@ -241,8 +241,52 @@ app.MapGet("/workspaces/{workspaceId}/files/content", async (
         content));
 });
 
-app.MapGet("/workspaces/{workspaceId}/graphify", (string workspaceId) =>
-    Results.Redirect($"/workspaces/{workspaceId}/graphify/index.html"));
+app.MapGet("/workspaces/{workspaceId}/assets/{**assetPath}", async (
+    string workspaceId,
+    string assetPath,
+    IWorkspaceStore workspaceStore,
+    CancellationToken cancellationToken) =>
+{
+    var workspace = await workspaceStore.GetOrCreateWorkspaceAsync(workspaceId, cancellationToken);
+    var resolvedPath = TryResolveWorkspacePath(workspace.RootPath, assetPath);
+    if (resolvedPath is null)
+    {
+        return Results.BadRequest(new { message = "Invalid asset path." });
+    }
+
+    return File.Exists(resolvedPath)
+        ? Results.File(resolvedPath, GetContentType(resolvedPath))
+        : Results.NotFound(new { message = "Asset not found.", requestedPath = assetPath });
+});
+
+app.MapGet("/workspaces/{workspaceId}/graphify", async (
+    string workspaceId,
+    IWorkspaceStore workspaceStore,
+    CancellationToken cancellationToken) =>
+{
+    var workspace = await workspaceStore.GetOrCreateWorkspaceAsync(workspaceId, cancellationToken);
+    var diagnostics = await BuildGraphifyDiagnosticsAsync(workspace, cancellationToken);
+    if (!string.IsNullOrWhiteSpace(diagnostics.PreferredAssetPath))
+    {
+        return Results.Redirect($"/workspaces/{workspaceId}/assets/{diagnostics.PreferredAssetPath}");
+    }
+
+    return Results.NotFound(new
+    {
+        message = "Nenhum HTML do Graphify foi encontrado para este workspace.",
+        expectedPath = $"workspaces/{workspaceId}/graphs/graph.html"
+    });
+});
+
+app.MapGet("/workspaces/{workspaceId}/graphify/sources", async (
+    string workspaceId,
+    IWorkspaceStore workspaceStore,
+    CancellationToken cancellationToken) =>
+{
+    var workspace = await workspaceStore.GetOrCreateWorkspaceAsync(workspaceId, cancellationToken);
+    var diagnostics = await BuildGraphifyDiagnosticsAsync(workspace, cancellationToken);
+    return Results.Ok(diagnostics);
+});
 
 app.MapGet("/workspaces/{workspaceId}/graphify/{**assetPath}", (
     string workspaceId,
@@ -491,6 +535,182 @@ static string GetContentType(string path)
         : "application/octet-stream";
 }
 
+static async Task<GraphifyDiagnosticsView> BuildGraphifyDiagnosticsAsync(
+    Workspace workspace,
+    CancellationToken cancellationToken)
+{
+    var graphRoot = WorkspaceLayout.GraphsRoot(workspace.RootPath);
+    var repositoryRoot = WorkspaceLayout.RepositoriesRoot(workspace.RootPath);
+
+    var candidates = new List<GraphifySourceView>();
+    candidates.AddRange(DiscoverGraphifySources(workspace.RootPath, graphRoot, "workspace-graphs", "Saída do pipeline do servidor"));
+
+    if (Directory.Exists(repositoryRoot))
+    {
+        foreach (var file in Directory.EnumerateFiles(repositoryRoot, "graph.html", SearchOption.AllDirectories)
+                     .Where(path => path.Contains($"{Path.DirectorySeparatorChar}graphify-out{Path.DirectorySeparatorChar}", StringComparison.OrdinalIgnoreCase)
+                         || path.Contains("/graphify-out/", StringComparison.OrdinalIgnoreCase))
+                     .OrderBy(path => path, StringComparer.OrdinalIgnoreCase))
+        {
+            candidates.Add(ToGraphifySourceView(workspace.RootPath, file, "repository-graphify-out", "Graphify-out detectado no repositório"));
+        }
+    }
+
+    var distinctCandidates = candidates
+        .GroupBy(candidate => candidate.RelativePath, StringComparer.OrdinalIgnoreCase)
+        .Select(group => group.First())
+        .ToArray();
+
+    var manifestPath = Path.Combine(graphRoot, "manifest.json");
+    var processLogPath = Path.Combine(graphRoot, "graphify-process.json");
+
+    GraphifyManifestView? manifest = null;
+    if (File.Exists(manifestPath))
+    {
+        manifest = await ReadGraphifyManifestAsync(workspace.RootPath, manifestPath, cancellationToken);
+    }
+
+    GraphifyProcessLogView? processLog = null;
+    if (File.Exists(processLogPath))
+    {
+        processLog = await ReadGraphifyProcessLogAsync(processLogPath, cancellationToken);
+    }
+
+    var preferred = distinctCandidates
+        .OrderByDescending(candidate => candidate.Kind == "repository-graphify-out")
+        .ThenBy(candidate => candidate.RelativePath.EndsWith("graph.html", StringComparison.OrdinalIgnoreCase) ? 0 : 1)
+        .ThenBy(candidate => candidate.RelativePath, StringComparer.OrdinalIgnoreCase)
+        .FirstOrDefault();
+
+    return new GraphifyDiagnosticsView(
+        workspace.Id,
+        preferred?.RelativePath,
+        preferred is not null,
+        distinctCandidates,
+        manifest,
+        processLog,
+        preferred is null
+            ? "Nenhum HTML do Graphify foi encontrado."
+            : manifest?.Generator == "fallback-file-graph"
+                ? "Foi encontrado apenas o HTML de fallback do servidor."
+                : preferred.Kind == "repository-graphify-out"
+                    ? "Foi encontrada a UI original gerada pelo Graphify em inputs/repositories/.../graphify-out/graph.html."
+                    : "Foi encontrada uma saída HTML do Graphify no workspace.");
+}
+
+static IReadOnlyCollection<GraphifySourceView> DiscoverGraphifySources(
+    string workspaceRoot,
+    string graphRoot,
+    string kind,
+    string label)
+{
+    var candidates = new List<GraphifySourceView>();
+    foreach (var fileName in new[] { "graph.html", "index.html" })
+    {
+        var path = Path.Combine(graphRoot, fileName);
+        if (File.Exists(path))
+        {
+            candidates.Add(ToGraphifySourceView(workspaceRoot, path, kind, label));
+        }
+    }
+
+    return candidates;
+}
+
+static GraphifySourceView ToGraphifySourceView(string workspaceRoot, string absolutePath, string kind, string label)
+{
+    var relativePath = ToWorkspaceRelativePath(workspaceRoot, absolutePath);
+    var info = new FileInfo(absolutePath);
+    return new GraphifySourceView(
+        relativePath,
+        $"/workspaces/{{workspaceId}}/assets/{relativePath}",
+        kind,
+        label,
+        info.LastWriteTimeUtc,
+        info.Length);
+}
+
+static async Task<GraphifyManifestView?> ReadGraphifyManifestAsync(
+    string workspaceRoot,
+    string manifestPath,
+    CancellationToken cancellationToken)
+{
+    try
+    {
+        await using var stream = File.OpenRead(manifestPath);
+        using var document = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
+        var root = document.RootElement;
+
+        var artifacts = root.TryGetProperty("artifacts", out var artifactsElement) && artifactsElement.ValueKind == JsonValueKind.Array
+            ? artifactsElement.EnumerateArray()
+                .Select(item => item.GetString())
+                .Where(value => !string.IsNullOrWhiteSpace(value))
+                .Select(value => ToWorkspaceRelativePath(workspaceRoot, value!))
+                .ToArray()
+            : [];
+
+        return new GraphifyManifestView(
+            root.TryGetProperty("generator", out var generator) ? generator.GetString() : null,
+            root.TryGetProperty("generatedAt", out var generatedAt) && generatedAt.TryGetDateTimeOffset(out var generatedAtValue) ? generatedAtValue : null,
+            root.TryGetProperty("nodeCount", out var nodeCount) && nodeCount.TryGetInt32(out var nodeCountValue) ? nodeCountValue : null,
+            root.TryGetProperty("edgeCount", out var edgeCount) && edgeCount.TryGetInt32(out var edgeCountValue) ? edgeCountValue : null,
+            artifacts);
+    }
+    catch
+    {
+        return null;
+    }
+}
+
+static async Task<GraphifyProcessLogView?> ReadGraphifyProcessLogAsync(
+    string processLogPath,
+    CancellationToken cancellationToken)
+{
+    try
+    {
+        await using var stream = File.OpenRead(processLogPath);
+        using var document = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
+        var root = document.RootElement;
+
+        static string? GetOptionalString(JsonElement rootElement, string propertyName)
+            => rootElement.TryGetProperty(propertyName, out var property) && property.ValueKind == JsonValueKind.String
+                ? property.GetString()
+                : null;
+
+        static DateTimeOffset? GetOptionalDateTimeOffset(JsonElement rootElement, string propertyName)
+            => rootElement.TryGetProperty(propertyName, out var property) && property.TryGetDateTimeOffset(out var value)
+                ? value
+                : null;
+
+        return new GraphifyProcessLogView(
+            GetOptionalString(root, "command"),
+            GetOptionalString(root, "arguments"),
+            root.TryGetProperty("exitCode", out var exitCode) && exitCode.TryGetInt32(out var exitCodeValue) ? exitCodeValue : null,
+            GetOptionalDateTimeOffset(root, "startedAt") ?? GetOptionalDateTimeOffset(root, "failedAt"),
+            GetOptionalDateTimeOffset(root, "finishedAt"),
+            GetOptionalString(root, "error"),
+            TrimLogPreview(GetOptionalString(root, "stdout")),
+            TrimLogPreview(GetOptionalString(root, "stderr")));
+    }
+    catch
+    {
+        return null;
+    }
+}
+
+static string? TrimLogPreview(string? value)
+{
+    if (string.IsNullOrWhiteSpace(value))
+    {
+        return null;
+    }
+
+    const int maxLength = 4000;
+    return value.Length <= maxLength
+        ? value
+        : $"{value[..maxLength]}\n\n[truncado]";
+}
+
 internal sealed record RegisterRepositoryRequest(
     string Name,
     string? RelativePath = null,
@@ -540,6 +760,40 @@ internal sealed record WorkspaceFilePreview(
     bool PreviewSupported,
     bool Truncated,
     string? Content);
+
+internal sealed record GraphifyDiagnosticsView(
+    string WorkspaceId,
+    string? PreferredAssetPath,
+    bool HasVisualization,
+    IReadOnlyCollection<GraphifySourceView> Sources,
+    GraphifyManifestView? Manifest,
+    GraphifyProcessLogView? ProcessLog,
+    string StatusMessage);
+
+internal sealed record GraphifySourceView(
+    string RelativePath,
+    string AssetRouteTemplate,
+    string Kind,
+    string Label,
+    DateTimeOffset LastModifiedAt,
+    long SizeBytes);
+
+internal sealed record GraphifyManifestView(
+    string? Generator,
+    DateTimeOffset? GeneratedAt,
+    int? NodeCount,
+    int? EdgeCount,
+    IReadOnlyCollection<string> Artifacts);
+
+internal sealed record GraphifyProcessLogView(
+    string? Command,
+    string? Arguments,
+    int? ExitCode,
+    DateTimeOffset? StartedAt,
+    DateTimeOffset? FinishedAt,
+    string? Error,
+    string? Stdout,
+    string? Stderr);
 
 internal sealed record OpenAiModelsResponse(
     [property: JsonPropertyName("data")] IReadOnlyCollection<OpenAiModel> Data,

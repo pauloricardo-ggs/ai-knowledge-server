@@ -20,7 +20,13 @@ public sealed class IndexingPipeline(
         WriteIndented = true
     };
 
-    private static readonly string[] IndexedRoots = ["documents", "repositories", "summaries", "roslyn"];
+    private static readonly string[] IndexedRoots =
+    [
+        $"{WorkspaceLayout.InputsRootName}/{WorkspaceLayout.DocumentsRootName}",
+        $"{WorkspaceLayout.InputsRootName}/{WorkspaceLayout.RepositoriesRootName}",
+        "summaries",
+        "roslyn"
+    ];
 
     public async Task IndexWorkspaceAsync(
         string workspaceId,
@@ -39,7 +45,7 @@ public sealed class IndexingPipeline(
         await reportProgressAsync(new IndexingProgress(
             "code-intelligence",
             "Gerando artefatos determinísticos de código.",
-            "repositories/"));
+            $"{WorkspaceLayout.InputsRootName}/{WorkspaceLayout.RepositoriesRootName}/"));
         await codeIntelligenceService.GenerateAsync(
             new CodeIntelligenceRequest(workspace.Id),
             cancellationToken);
@@ -55,6 +61,7 @@ public sealed class IndexingPipeline(
         var chunks = await BuildChunksAsync(workspace, reportProgressAsync, cancellationToken);
 
         var chunksPath = Path.Combine(workspace.RootPath, "embeddings", "chunks.json");
+        chunksPath = Path.Combine(WorkspaceLayout.EmbeddingsRoot(workspace.RootPath), "chunks.json");
         Directory.CreateDirectory(Path.GetDirectoryName(chunksPath)!);
         await File.WriteAllTextAsync(
             chunksPath,
@@ -145,7 +152,7 @@ public sealed class IndexingPipeline(
             []));
         await qdrantClient.UpsertAsync(workspace.Id, embedded, cancellationToken);
 
-        var summaryPath = Path.Combine(workspace.RootPath, "summaries", "indexing-summary.json");
+        var summaryPath = Path.Combine(WorkspaceLayout.SummariesRoot(workspace.RootPath), "indexing-summary.json");
         await File.WriteAllTextAsync(
             summaryPath,
             JsonSerializer.Serialize(new
@@ -268,8 +275,8 @@ public sealed class IndexingPipeline(
         var first = relativePath.Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar).FirstOrDefault();
         return first switch
         {
-            "documents" => "document",
-            "repositories" => "code",
+            WorkspaceLayout.InputsRootName when relativePath.StartsWith($"{WorkspaceLayout.InputsRootName}/{WorkspaceLayout.DocumentsRootName}/", StringComparison.OrdinalIgnoreCase) => "document",
+            WorkspaceLayout.InputsRootName when relativePath.StartsWith($"{WorkspaceLayout.InputsRootName}/{WorkspaceLayout.RepositoriesRootName}/", StringComparison.OrdinalIgnoreCase) => "code",
             "roslyn" => "roslyn",
             "summaries" => "summary",
             _ => "unknown"

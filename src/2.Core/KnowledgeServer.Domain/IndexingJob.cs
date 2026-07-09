@@ -10,7 +10,8 @@ public sealed record IndexingJob(
     DateTimeOffset? StartedAt = null,
     DateTimeOffset? CompletedAt = null,
     string? Error = null,
-    IndexingProgress? Progress = null);
+    IndexingProgress? Progress = null,
+    IReadOnlyCollection<IndexingLogEntry>? Logs = null);
 
 public sealed record IndexingProgress(
     string Stage,
@@ -20,3 +21,13 @@ public sealed record IndexingProgress(
     int? ProcessedItems = null,
     IReadOnlyCollection<string>? PendingPaths = null,
     DateTimeOffset? UpdatedAt = null);
+
+public sealed record IndexingLogEntry(
+    DateTimeOffset Timestamp,
+    string Level,
+    string Stage,
+    string Message,
+    string? CurrentPath = null,
+    int? TotalItems = null,
+    int? ProcessedItems = null,
+    IReadOnlyCollection<string>? PendingPaths = null);

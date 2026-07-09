@@ -133,7 +133,7 @@
               </label>
               <label>
                 Caminho relativo
-                <input id="repositoryPath" placeholder="repositories/backend-api" autocomplete="off">
+                <input id="repositoryPath" placeholder="inputs/repositories/backend-api" autocomplete="off">
               </label>
               <label>
                 Remote URL
@@ -203,7 +203,7 @@
           </label>
           <label>
             Buscar
-            <input id="jobSearchFilter" placeholder="manual-reindex, document-uploaded, repositories/..." autocomplete="off">
+            <input id="jobSearchFilter" placeholder="manual-reindex, document-uploaded, inputs/repositories/..." autocomplete="off">
           </label>
           <label>
             Itens por página
@@ -249,6 +249,19 @@
             <span id="runningIndexingBadge" class="badge">0</span>
           </div>
           <div id="runningIndexingList" class="stack-list"></div>
+        </section>
+
+        <section class="card-surface">
+          <div class="section-heading compact">
+            <h3>Timeline do job</h3>
+            <span id="jobLogsBadge" class="badge">0</span>
+          </div>
+          <label>
+            Job selecionado
+            <select id="jobLogsSelector"></select>
+          </label>
+          <div id="jobLogsSummary" class="muted-text">Selecione um job para ver o histórico detalhado.</div>
+          <div id="jobLogsList" class="stack-list"></div>
         </section>
       </section>
 
@@ -309,8 +322,45 @@
             <span id="graphifyStatusBadge" class="badge">Verificando...</span>
           </div>
           <p id="graphifyStatusText" class="muted-text">Carregando disponibilidade do HTML do grafo.</p>
+          <div class="graphify-meta-grid">
+            <label>
+              Fonte HTML
+              <select id="graphifySourceSelector"></select>
+            </label>
+            <div class="graphify-meta-card">
+              <strong>Gerador</strong>
+              <span id="graphifyGenerator" class="muted-text">-</span>
+            </div>
+            <div class="graphify-meta-card">
+              <strong>Nodes / Edges</strong>
+              <span id="graphifyCounts" class="muted-text">-</span>
+            </div>
+          </div>
           <div id="graphifyEmptyState" class="empty-state hidden">O HTML do Graphify ainda não foi gerado para este workspace.</div>
           <iframe id="graphifyFrame" class="graphify-frame hidden" title="Graphify workspace graph"></iframe>
+          <details class="graphify-diagnostics">
+            <summary>Diagnóstico do processo</summary>
+            <div class="stack-list">
+              <article>
+                <strong>Comando</strong>
+                <span id="graphifyCommand" class="mono-inline">-</span>
+                <span id="graphifyArguments" class="mono-inline">-</span>
+              </article>
+              <article>
+                <strong>Processo</strong>
+                <span id="graphifyProcessMeta" class="muted-text">-</span>
+                <span id="graphifyProcessError" class="muted-text">-</span>
+              </article>
+              <article>
+                <strong>STDERR</strong>
+                <pre id="graphifyStderr" class="diagnostic-pre">-</pre>
+              </article>
+              <article>
+                <strong>STDOUT</strong>
+                <pre id="graphifyStdout" class="diagnostic-pre">-</pre>
+              </article>
+            </div>
+          </details>
         </div>
       </section>
 

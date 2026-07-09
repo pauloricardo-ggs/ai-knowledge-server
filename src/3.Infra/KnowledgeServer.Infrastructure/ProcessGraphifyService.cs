@@ -21,19 +21,19 @@ public sealed class ProcessGraphifyService(
         CancellationToken cancellationToken)
     {
         var workspace = await workspaceStore.GetOrCreateWorkspaceAsync(request.WorkspaceId, cancellationToken);
-        var repositoryRoot = Path.Combine(workspace.RootPath, "repositories");
-        var graphRoot = Path.Combine(workspace.RootPath, "graphs");
-        Directory.CreateDirectory(repositoryRoot);
+        var inputRoot = WorkspaceLayout.InputsRoot(workspace.RootPath);
+        var graphRoot = WorkspaceLayout.GraphsRoot(workspace.RootPath);
+        Directory.CreateDirectory(inputRoot);
         Directory.CreateDirectory(graphRoot);
 
         var artifacts = new List<string>();
         var processSucceeded = false;
         if (!request.ForceFallback)
         {
-            processSucceeded = await TryRunGraphifyAsync(repositoryRoot, graphRoot, artifacts, cancellationToken);
+            processSucceeded = await TryRunGraphifyAsync(inputRoot, graphRoot, artifacts, cancellationToken);
         }
 
-        var graph = await BuildFallbackGraphAsync(workspace.RootPath, repositoryRoot, cancellationToken);
+        var graph = await BuildFallbackGraphAsync(workspace.RootPath, inputRoot, cancellationToken);
         if (!processSucceeded)
         {
             artifacts.Add(await WriteArtifactAsync(graphRoot, "graph.json", graph, cancellationToken));
@@ -43,7 +43,7 @@ public sealed class ProcessGraphifyService(
         var manifest = new
         {
             request.WorkspaceId,
-            repositoryRoot,
+            inputRoot,
             outputRoot = graphRoot,
             generator = processSucceeded ? "graphify-process" : "fallback-file-graph",
             generatedAt = DateTimeOffset.UtcNow,
@@ -55,7 +55,7 @@ public sealed class ProcessGraphifyService(
 
         return new GraphifyResult(
             workspace.Id,
-            repositoryRoot,
+            inputRoot,
             graphRoot,
             manifest.generator,
             manifest.generatedAt,
@@ -65,7 +65,7 @@ public sealed class ProcessGraphifyService(
     }
 
     private async Task<bool> TryRunGraphifyAsync(
-        string repositoryRoot,
+        string inputRoot,
         string graphRoot,
         ICollection<string> artifacts,
         CancellationToken cancellationToken)
@@ -77,7 +77,8 @@ public sealed class ProcessGraphifyService(
         }
 
         var arguments = options.Value.GraphifyArguments
-            .Replace("{RepositoryRoot}", repositoryRoot, StringComparison.Ordinal)
+            .Replace("{InputRoot}", inputRoot, StringComparison.Ordinal)
+            .Replace("{RepositoryRoot}", WorkspaceLayout.RepositoriesRoot(Path.GetDirectoryName(inputRoot) ?? inputRoot), StringComparison.Ordinal)
             .Replace("{GraphRoot}", graphRoot, StringComparison.Ordinal);
 
         var processLogPath = Path.Combine(graphRoot, "graphify-process.json");
@@ -88,7 +89,7 @@ public sealed class ProcessGraphifyService(
             {
                 FileName = command,
                 Arguments = arguments,
-                WorkingDirectory = repositoryRoot,
+                WorkingDirectory = inputRoot,
                 RedirectStandardError = true,
                 RedirectStandardOutput = true,
                 UseShellExecute = false,
@@ -106,7 +107,7 @@ public sealed class ProcessGraphifyService(
             {
                 command,
                 arguments,
-                repositoryRoot,
+                inputRoot,
                 graphRoot,
                 startedAt,
                 finishedAt = DateTimeOffset.UtcNow,
@@ -130,7 +131,7 @@ public sealed class ProcessGraphifyService(
             {
                 command,
                 arguments,
-                repositoryRoot,
+                inputRoot,
                 graphRoot,
                 failedAt = DateTimeOffset.UtcNow,
                 error = ex.Message
@@ -149,22 +150,22 @@ public sealed class ProcessGraphifyService(
 
     private static async Task<GraphDocument> BuildFallbackGraphAsync(
         string workspaceRoot,
-        string repositoryRoot,
+        string inputRoot,
         CancellationToken cancellationToken)
     {
         var nodes = new List<GraphNode>
         {
-            new("repositories", "repositories", "directory")
+            new(WorkspaceLayout.InputsRootName, WorkspaceLayout.InputsRootName, "directory")
         };
         var edges = new List<GraphEdge>();
 
-        if (!Directory.Exists(repositoryRoot))
+        if (!Directory.Exists(inputRoot))
         {
             return new GraphDocument(nodes, edges);
         }
 
-        foreach (var directory in Directory.EnumerateDirectories(repositoryRoot, "*", SearchOption.AllDirectories)
-                     .Where(path => !IsIgnoredPath(repositoryRoot, path))
+        foreach (var directory in Directory.EnumerateDirectories(inputRoot, "*", SearchOption.AllDirectories)
+                     .Where(path => !IsIgnoredPath(inputRoot, path))
                      .OrderBy(path => path, StringComparer.OrdinalIgnoreCase))
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -172,11 +173,11 @@ public sealed class ProcessGraphifyService(
             var id = NormalizeId(Path.GetRelativePath(workspaceRoot, directory));
             var label = Path.GetFileName(directory);
             nodes.Add(new GraphNode(id, label, "directory"));
-            edges.Add(new GraphEdge(ParentId(workspaceRoot, repositoryRoot, directory), id, "contains"));
+            edges.Add(new GraphEdge(ParentId(workspaceRoot, inputRoot, directory), id, "contains"));
         }
 
-        foreach (var file in Directory.EnumerateFiles(repositoryRoot, "*", SearchOption.AllDirectories)
-                     .Where(path => !IsIgnoredPath(repositoryRoot, path))
+        foreach (var file in Directory.EnumerateFiles(inputRoot, "*", SearchOption.AllDirectories)
+                     .Where(path => !IsIgnoredPath(inputRoot, path))
                      .OrderBy(path => path, StringComparer.OrdinalIgnoreCase))
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -184,7 +185,7 @@ public sealed class ProcessGraphifyService(
             var id = NormalizeId(Path.GetRelativePath(workspaceRoot, file));
             var info = new FileInfo(file);
             nodes.Add(new GraphNode(id, info.Name, "file", info.Length, Path.GetExtension(file)));
-            edges.Add(new GraphEdge(ParentId(workspaceRoot, repositoryRoot, file), id, "contains"));
+            edges.Add(new GraphEdge(ParentId(workspaceRoot, inputRoot, file), id, "contains"));
 
             if (Path.GetExtension(file).Equals(".csproj", StringComparison.OrdinalIgnoreCase))
             {
@@ -213,12 +214,12 @@ public sealed class ProcessGraphifyService(
         }
     }
 
-    private static string ParentId(string workspaceRoot, string repositoryRoot, string path)
+    private static string ParentId(string workspaceRoot, string inputRoot, string path)
     {
         var parent = Path.GetDirectoryName(path);
-        if (string.IsNullOrWhiteSpace(parent) || Path.GetFullPath(parent) == Path.GetFullPath(repositoryRoot))
+        if (string.IsNullOrWhiteSpace(parent) || Path.GetFullPath(parent) == Path.GetFullPath(inputRoot))
         {
-            return "repositories";
+            return WorkspaceLayout.InputsRootName;
         }
 
         return NormalizeId(Path.GetRelativePath(workspaceRoot, parent));
@@ -305,9 +306,9 @@ public sealed class ProcessGraphifyService(
         return path;
     }
 
-    private static bool IsIgnoredPath(string repositoryRoot, string path)
+    private static bool IsIgnoredPath(string inputRoot, string path)
     {
-        var relative = Path.GetRelativePath(repositoryRoot, path);
+        var relative = Path.GetRelativePath(inputRoot, path);
         var segments = relative.Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
         return segments.Any(segment => segment is ".git" or "bin" or "obj" or "node_modules");
     }

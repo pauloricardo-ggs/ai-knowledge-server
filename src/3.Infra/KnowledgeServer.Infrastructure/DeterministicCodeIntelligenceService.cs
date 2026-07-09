@@ -17,8 +17,8 @@ public sealed partial class DeterministicCodeIntelligenceService(IWorkspaceStore
         CancellationToken cancellationToken)
     {
         var workspace = await workspaceStore.GetOrCreateWorkspaceAsync(request.WorkspaceId, cancellationToken);
-        var repositoryRoot = Path.Combine(workspace.RootPath, "repositories");
-        var outputRoot = Path.Combine(workspace.RootPath, "roslyn");
+        var repositoryRoot = WorkspaceLayout.RepositoriesRoot(workspace.RootPath);
+        var outputRoot = WorkspaceLayout.RoslynRoot(workspace.RootPath);
         Directory.CreateDirectory(repositoryRoot);
         Directory.CreateDirectory(outputRoot);
 

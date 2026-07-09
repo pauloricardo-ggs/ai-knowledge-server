@@ -70,7 +70,7 @@ public sealed class FileSystemWorkspaceStore(IOptions<WorkspaceOptions> options)
         var workspace = await GetOrCreateWorkspaceAsync(workspaceId, cancellationToken);
         var safeCategory = NormalizeSegment(string.IsNullOrWhiteSpace(category) ? "raw" : category);
         var safeFileName = NormalizeFileName(fileName);
-        var targetDirectory = Path.Combine(workspace.RootPath, "documents", safeCategory);
+        var targetDirectory = Path.Combine(WorkspaceLayout.DocumentsRoot(workspace.RootPath), safeCategory);
         Directory.CreateDirectory(targetDirectory);
 
         var targetPath = Path.Combine(targetDirectory, safeFileName);
@@ -89,7 +89,7 @@ public sealed class FileSystemWorkspaceStore(IOptions<WorkspaceOptions> options)
         CancellationToken cancellationToken)
     {
         var workspace = await GetOrCreateWorkspaceAsync(workspaceId, cancellationToken);
-        var documentsRoot = Path.Combine(workspace.RootPath, "documents");
+        var documentsRoot = WorkspaceLayout.DocumentsRoot(workspace.RootPath);
         if (!Directory.Exists(documentsRoot))
         {
             return [];
@@ -114,13 +114,16 @@ public sealed class FileSystemWorkspaceStore(IOptions<WorkspaceOptions> options)
         var workspace = await GetOrCreateWorkspaceAsync(workspaceId, cancellationToken);
         var safeName = NormalizeSegment(name);
         var safeRelativePath = NormalizeRepositoryPath(string.IsNullOrWhiteSpace(relativePath)
-            ? Path.Combine("repositories", safeName)
+            ? Path.Combine(WorkspaceLayout.RepositoriesRootName, safeName)
             : relativePath);
 
-        if (!safeRelativePath.StartsWith("repositories/", StringComparison.Ordinal)
-            && safeRelativePath != "repositories")
+        if (!safeRelativePath.StartsWith($"{WorkspaceLayout.InputsRootName}/{WorkspaceLayout.RepositoriesRootName}/", StringComparison.Ordinal)
+            && safeRelativePath != $"{WorkspaceLayout.InputsRootName}/{WorkspaceLayout.RepositoriesRootName}")
         {
-            safeRelativePath = $"repositories/{safeRelativePath}";
+            safeRelativePath = safeRelativePath.StartsWith($"{WorkspaceLayout.RepositoriesRootName}/", StringComparison.Ordinal)
+                || safeRelativePath == WorkspaceLayout.RepositoriesRootName
+                ? $"{WorkspaceLayout.InputsRootName}/{safeRelativePath}"
+                : $"{WorkspaceLayout.InputsRootName}/{WorkspaceLayout.RepositoriesRootName}/{safeRelativePath}";
         }
 
         var absoluteRepositoryPath = Path.GetFullPath(Path.Combine(workspace.RootPath, safeRelativePath));
@@ -171,7 +174,7 @@ public sealed class FileSystemWorkspaceStore(IOptions<WorkspaceOptions> options)
             registered.AddRange(JsonSerializer.Deserialize<WorkspaceRepository[]>(json, JsonOptions) ?? []);
         }
 
-        var repositoriesRoot = Path.Combine(workspace.RootPath, "repositories");
+        var repositoriesRoot = WorkspaceLayout.RepositoriesRoot(workspace.RootPath);
         if (Directory.Exists(repositoriesRoot))
         {
             foreach (var directory in Directory.EnumerateDirectories(repositoriesRoot))
@@ -366,6 +369,30 @@ public sealed class FileSystemWorkspaceStore(IOptions<WorkspaceOptions> options)
             cancellationToken);
     }
 
+    public async Task<IndexingJob?> AppendIndexingJobLogAsync(
+        string workspaceId,
+        string jobId,
+        IndexingLogEntry logEntry,
+        CancellationToken cancellationToken)
+    {
+        return await UpdateIndexingJobAsync(
+            workspaceId,
+            jobId,
+            job =>
+            {
+                var logs = (job.Logs ?? [])
+                    .Append(logEntry)
+                    .TakeLast(300)
+                    .ToArray();
+
+                return job with
+                {
+                    Logs = logs
+                };
+            },
+            cancellationToken);
+    }
+
     public async Task<Workspace?> FindWorkspaceAsync(string workspaceId, CancellationToken cancellationToken)
     {
         var workspaces = await ListWorkspacesAsync(cancellationToken);
@@ -442,19 +469,22 @@ public sealed class FileSystemWorkspaceStore(IOptions<WorkspaceOptions> options)
 
     private static void EnsureWorkspaceLayout(string workspacePath)
     {
-        Directory.CreateDirectory(Path.Combine(workspacePath, "repositories"));
-        Directory.CreateDirectory(Path.Combine(workspacePath, "documents", "raw"));
-        Directory.CreateDirectory(Path.Combine(workspacePath, "graphs"));
-        Directory.CreateDirectory(Path.Combine(workspacePath, "roslyn"));
-        Directory.CreateDirectory(Path.Combine(workspacePath, "summaries"));
-        Directory.CreateDirectory(Path.Combine(workspacePath, "embeddings"));
-        Directory.CreateDirectory(Path.Combine(workspacePath, "cache", "jobs"));
-        Directory.CreateDirectory(Path.Combine(workspacePath, "logs"));
+        MigrateLegacyInputDirectory(workspacePath, WorkspaceLayout.RepositoriesRootName, WorkspaceLayout.RepositoriesRoot(workspacePath));
+        MigrateLegacyInputDirectory(workspacePath, WorkspaceLayout.DocumentsRootName, WorkspaceLayout.DocumentsRoot(workspacePath));
+
+        Directory.CreateDirectory(WorkspaceLayout.RepositoriesRoot(workspacePath));
+        Directory.CreateDirectory(WorkspaceLayout.RawDocumentsRoot(workspacePath));
+        Directory.CreateDirectory(WorkspaceLayout.GraphsRoot(workspacePath));
+        Directory.CreateDirectory(WorkspaceLayout.RoslynRoot(workspacePath));
+        Directory.CreateDirectory(WorkspaceLayout.SummariesRoot(workspacePath));
+        Directory.CreateDirectory(WorkspaceLayout.EmbeddingsRoot(workspacePath));
+        Directory.CreateDirectory(WorkspaceLayout.JobsRoot(workspacePath));
+        Directory.CreateDirectory(WorkspaceLayout.LogsRoot(workspacePath));
     }
 
     private static string RepositoriesMetadataPath(string workspaceRoot)
     {
-        return Path.Combine(workspaceRoot, "repositories", "repositories.json");
+        return Path.Combine(WorkspaceLayout.RepositoriesRoot(workspaceRoot), "repositories.json");
     }
 
     private static async Task WriteRepositoriesAsync(
@@ -476,7 +506,11 @@ public sealed class FileSystemWorkspaceStore(IOptions<WorkspaceOptions> options)
         var info = new FileInfo(path);
         var relativePath = Path.GetRelativePath(workspaceRoot, path);
         var segments = relativePath.Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
-        var category = segments.Length >= 3 && segments[0] == "documents" ? segments[1] : "unknown";
+        var category = segments.Length >= 4
+            && segments[0] == WorkspaceLayout.InputsRootName
+            && segments[1] == WorkspaceLayout.DocumentsRootName
+            ? segments[2]
+            : "unknown";
 
         return new WorkspaceDocument(
             workspaceId,
@@ -499,6 +533,45 @@ public sealed class FileSystemWorkspaceStore(IOptions<WorkspaceOptions> options)
         var segments = relative.Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
         return segments.Any(segment => segment is ".git" or "bin" or "obj" or "node_modules")
             || segments.FirstOrDefault() is "cache" or "logs" or "embeddings";
+    }
+
+    private static void MigrateLegacyInputDirectory(string workspacePath, string legacyDirectoryName, string targetPath)
+    {
+        var legacyPath = Path.Combine(workspacePath, legacyDirectoryName);
+        if (!Directory.Exists(legacyPath))
+        {
+            return;
+        }
+
+        if (!Directory.Exists(targetPath))
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(targetPath)!);
+            Directory.Move(legacyPath, targetPath);
+            return;
+        }
+
+        foreach (var directory in Directory.EnumerateDirectories(legacyPath))
+        {
+            var destination = Path.Combine(targetPath, Path.GetFileName(directory));
+            if (!Directory.Exists(destination))
+            {
+                Directory.Move(directory, destination);
+            }
+        }
+
+        foreach (var file in Directory.EnumerateFiles(legacyPath))
+        {
+            var destination = Path.Combine(targetPath, Path.GetFileName(file));
+            if (!File.Exists(destination))
+            {
+                File.Move(file, destination);
+            }
+        }
+
+        if (!Directory.EnumerateFileSystemEntries(legacyPath).Any())
+        {
+            Directory.Delete(legacyPath, recursive: false);
+        }
     }
 
     private static string[] Tokenize(string value)
@@ -585,7 +658,13 @@ public sealed class FileSystemWorkspaceStore(IOptions<WorkspaceOptions> options)
             .Where(segment => segment != "." && segment != "..")
             .Select(NormalizeSegment);
 
-        return string.Join('/', segments);
+        var joined = string.Join('/', segments);
+        if (string.IsNullOrWhiteSpace(joined))
+        {
+            return $"{WorkspaceLayout.InputsRootName}/{WorkspaceLayout.RepositoriesRootName}";
+        }
+
+        return joined;
     }
 
     private static string? TryReadGitRemote(string repositoryPath)

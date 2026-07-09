@@ -62,4 +62,10 @@ public interface IWorkspaceStore
         string jobId,
         IndexingProgress progress,
         CancellationToken cancellationToken);
+
+    Task<IndexingJob?> AppendIndexingJobLogAsync(
+        string workspaceId,
+        string jobId,
+        IndexingLogEntry logEntry,
+        CancellationToken cancellationToken);
 }

@@ -13,7 +13,7 @@ public sealed class Worker(
     IOptions<WorkspaceOptions> workspaceOptions,
     ILogger<Worker> logger) : BackgroundService
 {
-    private static readonly string[] ObservedWorkspaceRoots = ["documents", "repositories"];
+    private static readonly string[] ObservedInputRoots = [WorkspaceLayout.DocumentsRootName, WorkspaceLayout.RepositoriesRootName];
     private static readonly TimeSpan DebounceWindow = TimeSpan.FromSeconds(5);
     private static readonly TimeSpan JobPollingInterval = TimeSpan.FromSeconds(10);
     private readonly ConcurrentDictionary<string, PendingChange> pendingChanges = new(StringComparer.OrdinalIgnoreCase);
@@ -120,12 +120,34 @@ public sealed class Worker(
                 null,
                 cancellationToken);
 
+            await workspaceStore.AppendIndexingJobLogAsync(
+                job.WorkspaceId,
+                job.Id,
+                new IndexingLogEntry(
+                    DateTimeOffset.UtcNow,
+                    "info",
+                    "worker",
+                    "Worker iniciou o processamento do job.",
+                    job.SourcePath),
+                cancellationToken);
+
             await workspaceStore.UpdateIndexingJobProgressAsync(
                 job.WorkspaceId,
                 job.Id,
                 new IndexingProgress(
                     "queued",
                     "Job aceito pelo worker e aguardando início do pipeline."),
+                cancellationToken);
+
+            await workspaceStore.AppendIndexingJobLogAsync(
+                job.WorkspaceId,
+                job.Id,
+                new IndexingLogEntry(
+                    DateTimeOffset.UtcNow,
+                    "info",
+                    "queued",
+                    "Job movido para execução.",
+                    job.SourcePath),
                 cancellationToken);
 
             try
@@ -139,11 +161,28 @@ public sealed class Worker(
                     job.WorkspaceId,
                     job.Id,
                     job.Reason,
-                    progress => workspaceStore.UpdateIndexingJobProgressAsync(
-                        job.WorkspaceId,
-                        job.Id,
-                        progress,
-                        cancellationToken),
+                    async progress =>
+                    {
+                        await workspaceStore.UpdateIndexingJobProgressAsync(
+                            job.WorkspaceId,
+                            job.Id,
+                            progress,
+                            cancellationToken);
+
+                        await workspaceStore.AppendIndexingJobLogAsync(
+                            job.WorkspaceId,
+                            job.Id,
+                            new IndexingLogEntry(
+                                progress.UpdatedAt ?? DateTimeOffset.UtcNow,
+                                "info",
+                                progress.Stage,
+                                progress.Message,
+                                progress.CurrentPath,
+                                progress.TotalItems,
+                                progress.ProcessedItems,
+                                progress.PendingPaths),
+                            cancellationToken);
+                    },
                     cancellationToken);
 
                 await workspaceStore.UpdateIndexingJobProgressAsync(
@@ -152,6 +191,17 @@ public sealed class Worker(
                     new IndexingProgress(
                         "completed",
                         "Indexação concluída com sucesso."),
+                    cancellationToken);
+
+                await workspaceStore.AppendIndexingJobLogAsync(
+                    job.WorkspaceId,
+                    job.Id,
+                    new IndexingLogEntry(
+                        DateTimeOffset.UtcNow,
+                        "info",
+                        "completed",
+                        "Pipeline finalizado com sucesso.",
+                        job.SourcePath),
                     cancellationToken);
 
                 await workspaceStore.UpdateIndexingJobStatusAsync(
@@ -175,6 +225,17 @@ public sealed class Worker(
                     new IndexingProgress(
                         "failed",
                         ex.Message),
+                    cancellationToken);
+
+                await workspaceStore.AppendIndexingJobLogAsync(
+                    job.WorkspaceId,
+                    job.Id,
+                    new IndexingLogEntry(
+                        DateTimeOffset.UtcNow,
+                        "error",
+                        "failed",
+                        ex.Message,
+                        job.SourcePath),
                     cancellationToken);
 
                 await workspaceStore.UpdateIndexingJobStatusAsync(
@@ -216,12 +277,13 @@ public sealed class Worker(
         }
 
         var segments = relative.Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
-        if (segments.Length < 2)
+        if (segments.Length < 3)
         {
             return false;
         }
 
-        return ObservedWorkspaceRoots.Contains(segments[1], StringComparer.OrdinalIgnoreCase);
+        return segments[1].Equals(WorkspaceLayout.InputsRootName, StringComparison.OrdinalIgnoreCase)
+            && ObservedInputRoots.Contains(segments[2], StringComparer.OrdinalIgnoreCase);
     }
 
     private static bool IsIgnored(string path)
