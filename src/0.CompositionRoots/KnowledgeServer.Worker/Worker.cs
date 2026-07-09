@@ -12,6 +12,7 @@ public sealed class Worker(
     IOptions<WorkspaceOptions> workspaceOptions,
     ILogger<Worker> logger) : BackgroundService
 {
+    private static readonly string[] ObservedWorkspaceRoots = ["documents", "repositories"];
     private static readonly TimeSpan DebounceWindow = TimeSpan.FromSeconds(5);
     private static readonly TimeSpan JobPollingInterval = TimeSpan.FromSeconds(10);
     private readonly ConcurrentDictionary<string, PendingChange> pendingChanges = new(StringComparer.OrdinalIgnoreCase);
@@ -49,7 +50,9 @@ public sealed class Worker(
 
     private void TrackChange(string rootPath, string path, string reason)
     {
-        if (!TryGetWorkspaceId(rootPath, path, out var workspaceId) || IsIgnored(path))
+        if (!TryGetWorkspaceId(rootPath, path, out var workspaceId)
+            || !IsObservedWorkspacePath(rootPath, path)
+            || IsIgnored(path))
         {
             return;
         }
@@ -171,6 +174,23 @@ public sealed class Worker(
 
         workspaceId = segments[0];
         return true;
+    }
+
+    private static bool IsObservedWorkspacePath(string rootPath, string path)
+    {
+        var relative = Path.GetRelativePath(rootPath, path);
+        if (relative.StartsWith("..", StringComparison.Ordinal) || Path.IsPathRooted(relative))
+        {
+            return false;
+        }
+
+        var segments = relative.Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        if (segments.Length < 2)
+        {
+            return false;
+        }
+
+        return ObservedWorkspaceRoots.Contains(segments[1], StringComparer.OrdinalIgnoreCase);
     }
 
     private static bool IsIgnored(string path)
